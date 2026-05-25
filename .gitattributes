@@ -1,0 +1,16 @@
+* text=auto
+
+*.docx binary
+*.pptx binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.mp4 binary
+*.avi binary
+*.mov binary
+*.pt binary
+*.onnx binary
+*.engine binary

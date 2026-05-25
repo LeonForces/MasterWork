@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+.venv-*/
+venv/
+env/
+
+# Node
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# OS/Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Runtime artifacts
+*.log
+tmp/
+data/
+artifacts/
+test_api.db
+*.sqlite
+*.sqlite3
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Docker
+postgres_data/
+grafana_data/
+
+# ML/data artifacts
+datasets/
+runs/
+*.pt
+*.onnx
+*.engine
+*.mp4
+*.avi
+*.mov
+
+# Generated QA/build outputs
+output/
+docs/**/qa/output/
+docs/**/qa/scratch/
+~$*
+
+# LaTeX auxiliary files
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.out
+*.run.xml
+*.toc
+*.xdv
+*-SAVE-ERROR

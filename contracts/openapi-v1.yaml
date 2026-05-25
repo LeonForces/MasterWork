@@ -1,0 +1,72 @@
+openapi: 3.1.0
+info:
+  title: Video Analytics API
+  version: 1.0.0
+servers:
+  - url: http://localhost:8000
+paths:
+  /api/v1/auth/login:
+    post:
+      summary: Login
+  /api/v1/auth/refresh:
+    post:
+      summary: Refresh token pair
+  /api/v1/auth/logout:
+    post:
+      summary: Revoke refresh token
+  /api/v1/auth/me:
+    get:
+      summary: Current user profile
+  /api/v1/users:
+    get:
+      summary: List users
+    post:
+      summary: Create user
+  /api/v1/cameras:
+    get:
+      summary: List cameras
+    post:
+      summary: Create camera
+  /api/v1/cameras/{camera_id}:
+    patch:
+      summary: Update camera
+    delete:
+      summary: Delete camera
+  /api/v1/zones:
+    get:
+      summary: List zones
+    post:
+      summary: Create zone
+  /api/v1/zones/{zone_id}:
+    patch:
+      summary: Update zone
+    delete:
+      summary: Delete zone
+  /api/v1/rules:
+    get:
+      summary: List rules
+    post:
+      summary: Create rule
+  /api/v1/rules/{rule_id}:
+    patch:
+      summary: Update rule
+    delete:
+      summary: Delete rule
+  /api/v1/events:
+    get:
+      summary: List events
+  /api/v1/events/{event_id}/ack:
+    patch:
+      summary: Acknowledge event
+  /api/v1/events/{event_id}/evidence:
+    get:
+      summary: Export event evidence
+  /health/live:
+    get:
+      summary: Liveness probe
+  /health/ready:
+    get:
+      summary: Readiness probe
+  /metrics:
+    get:
+      summary: Prometheus metrics

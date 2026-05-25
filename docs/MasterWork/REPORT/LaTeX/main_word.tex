@@ -1,0 +1,74 @@
+\documentclass[14pt,a4paper,oneside]{extreport}
+
+\newcommand{\UniversityEmblemPath}{../../PRESENTATION/university_emblem.png}
+\newcommand{\DepartmentCode}{806}
+\newcommand{\DepartmentHeadName}{Крылов С.\,С.}
+\newcommand{\SupervisorName}{Гаврилов Константин Юрьевич, доктор технических наук, профессор}
+\newcommand{\ExecutorName}{Нурмухамедов А.\,Б.}
+\newcommand{\CityName}{Москва}
+\newcommand{\WorkYear}{2026}
+\newcommand{\WorkTopic}{Платформы видеоаналитики реального времени для мониторинга и событийного анализа в системах охранного видеонаблюдения}
+
+\input{preamble}
+\addbibresource{references.bib}
+
+\begin{document}
+
+\hypersetup{pageanchor=false}
+\begin{titlepage}
+\begin{center}
+\includegraphics[width=2.4cm]{\UniversityEmblemPath}
+
+МИНИСТЕРСТВО НАУКИ И ВЫСШЕГО ОБРАЗОВАНИЯ\\
+РОССИЙСКОЙ ФЕДЕРАЦИИ\\
+ФЕДЕРАЛЬНОЕ ГОСУДАРСТВЕННОЕ АВТОНОМНОЕ ОБРАЗОВАТЕЛЬНОЕ\\
+УЧРЕЖДЕНИЕ ВЫСШЕГО ОБРАЗОВАНИЯ\\
+«МОСКОВСКИЙ АВИАЦИОННЫЙ ИНСТИТУТ»\\
+(национальный исследовательский университет)
+
+\vspace{3cm}
+
+ОТЧЕТ\\
+ПО МАГИСТЕРСКОЙ ДИПЛОМНОЙ РАБОТЕ
+
+\vspace{1cm}
+
+по теме:\\
+\WorkTopic
+
+\vspace{3cm}
+
+\begin{flushright}
+Исполнитель: \ExecutorName\\
+Научный руководитель: \SupervisorName\\
+Кафедра: \DepartmentCode\\
+Заведующий кафедрой: \DepartmentHeadName
+\end{flushright}
+
+\vfill
+\CityName\ \WorkYear
+\end{center}
+\end{titlepage}
+
+\clearpage
+\hypersetup{pageanchor=true}
+
+\tableofcontents
+\clearpage
+
+\input{abbreviations}
+\input{terms}
+\input{introduction}
+\input{chapter1_problem_statement}
+\input{chapter2_model_algorithm}
+\input{chapter3_implementation}
+\input{chapter4_approbation}
+\input{word_demo_update}
+\input{conclusion}
+
+\printbibliography[title={СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ},heading=bibintoc]
+
+\input{appendix_a_api_contract}
+\input{appendix_b_deployment}
+
+\end{document}

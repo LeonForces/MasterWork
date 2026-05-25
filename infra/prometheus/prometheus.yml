@@ -1,0 +1,19 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: api
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - api:8000
+
+  - job_name: analytics_worker
+    static_configs:
+      - targets:
+          - analytics-worker:9101
+
+  - job_name: integration_worker
+    static_configs:
+      - targets:
+          - integration-worker:9102

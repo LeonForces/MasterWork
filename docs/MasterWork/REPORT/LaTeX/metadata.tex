@@ -1,0 +1,83 @@
+\newcommand{\UniversityEmblemPath}{../../PRESENTATION/university_emblem.png}
+\newcommand{\DepartmentCode}{806}
+\newcommand{\DepartmentHeadName}{Крылов С.\,С.}
+\newcommand{\SupervisorName}{\begin{tabular}[t]{@{}r@{}}Гаврилов Константин\\Юрьевич\\доктор технических наук, \\профессор\end{tabular}}
+\newcommand{\ExecutorName}{Нурмухамедов А.\,Б.}
+\newcommand{\CityName}{Москва}
+\newcommand{\WorkYear}{2026}
+\newcommand{\WorkTopic}{Платформы видеоаналитики\\
+                реального времени для мониторинга и событийного\\
+                анализа в системах охранного видеонаблюдения}
+
+\newcommand{\makeworktitle}{
+    \begin{titlepage}
+        \thispagestyle{empty}
+        \begin{spacing}{1.0}
+            \noindent
+            \begin{minipage}[t]{0.18\textwidth}
+                \vspace{0pt}
+                \includegraphics[width=\linewidth]{\UniversityEmblemPath}
+            \end{minipage}
+            \hfill
+            \begin{minipage}[t]{0.78\textwidth}
+                \vspace{0pt}
+                \begin{center}
+                    {\small\bfseries МИНИСТЕРСТВО НАУКИ И ВЫСШЕГО ОБРАЗОВАНИЯ\par}
+                    {\small\bfseries РОССИЙСКОЙ ФЕДЕРАЦИИ\par}
+                    {\small\bfseries ФЕДЕРАЛЬНОЕ ГОСУДАРСТВЕННОЕ АВТОНОМНОЕ ОБРАЗОВАТЕЛЬНОЕ\par}
+                    {\small\bfseries УЧРЕЖДЕНИЕ ВЫСШЕГО ОБРАЗОВАНИЯ\par}
+                    {\small\bfseries «МОСКОВСКИЙ АВИАЦИОННЫЙ ИНСТИТУТ»\par}
+                    {\small\bfseries (национальный исследовательский университет)\par}
+                \end{center}
+            \end{minipage}
+
+            \vspace{0.4cm}
+            \noindent\rule{\textwidth}{0.8pt}
+
+            \vspace{1.0cm}
+            \begin{flushright}
+                \begin{minipage}{0.74\textwidth}
+                    \begin{center}
+                        {\Large\bfseries УТВЕРЖДАЮ}
+                    \end{center}
+                    \vspace{0.2cm}
+                    \begin{tabular}{@{}p{6.6cm}@{}p{2.4cm}@{}p{3.0cm}@{}}
+                        {\raggedleft Заведующий кафедрой~\DepartmentCode\arraybackslash} &
+                        {\centering \rule{2.4cm}{0.4pt}\arraybackslash} &
+                        {\raggedright \DepartmentHeadName\arraybackslash} \\
+                        {\centering \scriptsize (№ каф.)\arraybackslash} &
+                        {\centering \scriptsize (подпись)\arraybackslash} &
+                        {\centering \scriptsize (инициалы, фамилия)\arraybackslash}
+                    \end{tabular}
+
+                    \vspace{0.45cm}
+                    \hfill\rule{1.2cm}{0.4pt}\hspace{0.3cm}\rule{2.8cm}{0.4pt}\hspace{0.3cm}\WorkYear\ г.
+                \end{minipage}
+            \end{flushright}
+
+            \vspace{2.5cm}
+            \begin{center}
+                {\Large ОТЧЕТ\par}
+                \vspace{0.2cm}
+                {\Large О НАУЧНО-ИССЛЕДОВАТЕЛЬСКОЙ РАБОТЕ\par}
+                \vspace{0.9cm}
+                {\large по теме:\par}
+                \vspace{0.3cm}
+                \WorkTopic.
+            \end{center}
+
+            \vfill
+            \noindent
+            \begin{tabularx}{\textwidth}{@{}l c r@{}}
+                Научный руководитель & \rule{4.6cm}{0.4pt} & \SupervisorName \\
+                [0.9cm]
+                Исполнитель & \rule{4.6cm}{0.4pt} & \ExecutorName \\
+            \end{tabularx}
+
+            \vfill
+            \begin{center}
+                {\large \CityName\ \WorkYear}
+            \end{center}
+        \end{spacing}
+    \end{titlepage}
+}

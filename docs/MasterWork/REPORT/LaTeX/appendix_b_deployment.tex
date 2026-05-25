@@ -1,0 +1,135 @@
+\chapter*{ПРИЛОЖЕНИЕ Б. ТОПОЛОГИЯ РАЗВЕРТЫВАНИЯ И ПРОФИЛИ ЗАПУСКА}
+\phantomsection
+\addcontentsline{toc}{chapter}{ПРИЛОЖЕНИЕ Б. ТОПОЛОГИЯ РАЗВЕРТЫВАНИЯ И ПРОФИЛИ ЗАПУСКА}
+
+\section*{Б.1 Минимальный compose-контур}
+\phantomsection
+\addcontentsline{toc}{section}{Б.1 Минимальный compose-контур}
+
+\begin{longtable}{@{}p{0.3\textwidth}p{0.64\textwidth}@{}}
+\texttt{ui} & SPA-интерфейс оператора \\
+\texttt{api} & Управление конфигурацией, событиями, аутентификацией, RBAC и служебными маршрутами \texttt{/health}, \texttt{/metrics} \\
+\texttt{analytics-worker} & Захват потоков, инференс, сопровождение объектов, правила, таблица исходящих сообщений \\
+\texttt{integration-worker} & Публикация и доставка событий, повторы, очередь недоставленных сообщений \\
+\texttt{postgres} & Хранение конфигурации, событий, таблицы исходящих сообщений и журнала доставок \\
+\texttt{rabbitmq} & Асинхронный транспорт событий \\
+\texttt{prometheus} & Сбор метрик \\
+\texttt{grafana} & Визуализация метрик \\
+\texttt{webhook-mock} & Тестовый HTTP-получатель \\
+\end{longtable}
+
+\section*{Б.2 Профили запуска}
+\phantomsection
+\addcontentsline{toc}{section}{Б.2 Профили запуска}
+
+CPU-профиль разработки:
+\begin{itemize}
+    \item 1--3 видеопотока;
+    \item базовая легкая YOLO-модель на CPU;
+    \item акцент на функциональные и интеграционные проверки.
+\end{itemize}
+
+Профиль дальнейшего аппаратного ускорения:
+\begin{itemize}
+    \item 1--10 видеопотоков;
+    \item инференс с аппаратным ускорением;
+    \item фиксация p95-задержек и устойчивости доставки событий в отдельной серии прогонов.
+\end{itemize}
+
+\section*{Б.3 Операционные команды}
+\phantomsection
+\addcontentsline{toc}{section}{Б.3 Операционные команды}
+
+\begin{verbatim}
+# запуск стека
+make up-d
+
+# просмотр статуса
+make ps
+
+# применение миграций
+make migrate-up
+
+# запуск smoke-сценария
+make smoke-e2e
+
+# остановка стека
+make down
+\end{verbatim}
+
+\section*{Б.4 Рекомендации по воспроизводимости}
+\phantomsection
+\addcontentsline{toc}{section}{Б.4 Рекомендации по воспроизводимости}
+
+\begin{enumerate}
+    \item Фиксировать версии контейнерных образов и зависимостей.
+    \item Разделять базовую CPU-конфигурацию и профиль аппаратного ускорения через переменные окружения.
+    \item Сохранять артефакты прогонов: логи, snapshots Grafana, выгрузки метрик.
+    \item Проводить повторные прогоны при неизменной конфигурации для оценки разброса метрик.
+\end{enumerate}
+
+\section*{Б.5 Переменные окружения (пример)}
+\phantomsection
+\addcontentsline{toc}{section}{Б.5 Переменные окружения (пример)}
+
+\begin{longtable}{@{}p{0.34\textwidth}p{0.6\textwidth}@{}}
+\nolinkurl{POSTGRES_DB} & Имя базы данных платформы \\
+\nolinkurl{POSTGRES_USER} & Пользователь БД \\
+\nolinkurl{POSTGRES_PASSWORD} & Пароль пользователя БД \\
+\nolinkurl{DATABASE_URL} & Строка подключения API к PostgreSQL \\
+\nolinkurl{RABBITMQ_URL} & Строка подключения к RabbitMQ \\
+\nolinkurl{JWT_SECRET} & Секрет подписи JWT \\
+\nolinkurl{JWT_ACCESS_TTL_MIN} & Время жизни access-токена (минуты) \\
+\nolinkurl{JWT_REFRESH_TTL_DAYS} & Время жизни refresh-токена (дни) \\
+\nolinkurl{WEBHOOK_TARGET_URL} & URL целевого HTTP-получателя (в тестах - \texttt{webhook-mock}) \\
+\nolinkurl{OUTBOX_BATCH_SIZE} & Размер пакета публикации таблицы исходящих сообщений \\
+\nolinkurl{OUTBOX_POLL_INTERVAL_MS} & Интервал опроса таблицы исходящих сообщений \\
+\nolinkurl{DELIVERY_MAX_RETRIES} & Лимит повторов доставки \\
+\nolinkurl{DELIVERY_BACKOFF_BASE_MS} & Базовая задержка между повторами доставки \\
+\nolinkurl{PROMETHEUS_ENABLED} & Флаг экспорта метрик \\
+\end{longtable}
+
+\section*{Б.6 Фрагмент docker-compose (концептуально)}
+\phantomsection
+\addcontentsline{toc}{section}{Б.6 Фрагмент docker-compose (концептуально)}
+
+\begin{verbatim}
+services:
+  api:
+    build: ./services/api
+    depends_on: [postgres, rabbitmq]
+  analytics-worker:
+    build: ./services/analytics-worker
+    depends_on: [postgres, rabbitmq]
+  integration-worker:
+    build: ./services/integration-worker
+    depends_on: [postgres, rabbitmq, webhook-mock]
+  ui:
+    build: ./services/ui
+    depends_on: [api]
+  postgres:
+    image: postgres:16
+  rabbitmq:
+    image: rabbitmq:3-management
+  prometheus:
+    image: prom/prometheus
+  grafana:
+    image: grafana/grafana
+  webhook-mock:
+    image: mendhak/http-https-echo
+\end{verbatim}
+
+\section*{Б.7 Профиль дальнейшего аппаратного ускорения}
+\phantomsection
+\addcontentsline{toc}{section}{Б.7 Профиль дальнейшего аппаратного ускорения}
+
+При переносе на стенд с аппаратным ускорением рекомендуется:
+\begin{enumerate}
+    \item Включить профиль контейнеров с доступом к ускорителю.
+    \item Отдельно зафиксировать версию драйвера NVIDIA и среды исполнения.
+    \item Повторно откалибровать \(\tau_{\text{conf}}\), размер входа модели и целевой FPS.
+    \item Выполнить серию прогонов 1, 3, 5, 10 камер с неизменными правилами.
+    \item Для каждого шага мощности зафиксировать p95 \texttt{object->event}, dropped frames и delivery failures.
+\end{enumerate}
+
+Эти шаги необходимы для сопоставимости профилей запуска и для корректной интерпретации масштабируемости платформы.

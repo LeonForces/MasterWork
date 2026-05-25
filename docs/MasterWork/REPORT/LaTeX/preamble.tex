@@ -1,0 +1,220 @@
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setdefaultlanguage{russian}
+\setotherlanguage{english}
+% Предпочтительный шрифт по требованиям: Times New Roman.
+% Для контейнерной сборки с кириллицей оставлен безопасный fallback.
+\IfFontExistsTF{Times New Roman}{
+  \setmainfont{Times New Roman}
+  \newfontfamily\cyrillicfont{Times New Roman}
+}{
+  \IfFontExistsTF{FreeSerif}{
+    \setmainfont{FreeSerif}
+    \newfontfamily\cyrillicfont{FreeSerif}
+  }{
+    \IfFontExistsTF{Linux Libertine O}{
+      \setmainfont{Linux Libertine O}
+      \newfontfamily\cyrillicfont{Linux Libertine O}
+    }{
+      \setmainfont{TeX Gyre Termes}
+      \newfontfamily\cyrillicfont{TeX Gyre Termes}
+    }
+  }
+}
+\IfFontExistsTF{Courier New}{
+  \newfontfamily\cyrillicfonttt{Courier New}
+}{
+  \IfFontExistsTF{TeX Gyre Cursor}{
+    \newfontfamily\cyrillicfonttt{TeX Gyre Cursor}
+  }{
+    \newfontfamily\cyrillicfonttt{Latin Modern Mono}
+  }
+}
+
+\usepackage[a4paper,left=30mm,right=15mm,top=20mm,bottom=20mm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+\setlength{\parindent}{1.25cm}
+\setlength{\parskip}{0pt}
+\usepackage{indentfirst}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{enumitem}
+\setlist[itemize]{
+  label=-,
+  leftmargin=1.25cm,
+  listparindent=1.25cm,
+  labelsep=0.5em,
+  itemsep=0pt,
+  topsep=6pt,
+  parsep=0pt,
+  partopsep=0pt
+}
+\setlist[enumerate]{
+  leftmargin=1.25cm,
+  listparindent=1.25cm,
+  labelsep=0.5em,
+  itemsep=0pt,
+  topsep=6pt,
+  parsep=0pt,
+  partopsep=0pt
+}
+\setlist[enumerate,1]{label=\arabic*),ref=\arabic*)}
+\setlist[enumerate,2]{label=\alph*),ref=\alph*)}
+\setlist[enumerate,3]{label=\roman*),ref=\roman*)}
+
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{float}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,shapes.symbols,fit,backgrounds,calc,shadows.blur}
+\usepackage{xcolor}
+\definecolor{cBg}{RGB}{246,247,250}
+\definecolor{cBox}{RGB}{233,239,247}
+\definecolor{cBoxAlt}{RGB}{241,237,231}
+\definecolor{cBoxAcc}{RGB}{226,238,233}
+\definecolor{cBorder}{RGB}{120,134,154}
+\definecolor{cArrow}{RGB}{60,75,100}
+\definecolor{cText}{RGB}{30,33,40}
+\definecolor{cCodeBg}{RGB}{248,248,244}
+\definecolor{cCodeKw}{RGB}{0,90,160}
+\definecolor{cCodeStr}{RGB}{120,40,40}
+\definecolor{cCodeCmt}{RGB}{90,110,90}
+\definecolor{cCodeNum}{RGB}{120,120,120}
+\usepackage{caption}
+\DeclareCaptionLabelSeparator{emdash}{ - }
+\captionsetup[figure]{name=Рисунок,labelsep=emdash,justification=centering}
+\captionsetup[table]{name=Таблица,labelsep=emdash,justification=raggedright,singlelinecheck=false}
+\captionsetup{skip=6pt}
+\setlength{\abovecaptionskip}{6pt}
+\setlength{\belowcaptionskip}{0pt}
+
+\usepackage{chngcntr}
+\counterwithin{figure}{chapter}
+\counterwithin{table}{chapter}
+\renewcommand{\theequation}{\arabic{equation}}
+
+\usepackage[hidelinks]{hyperref}
+\usepackage{xurl}
+\usepackage{csquotes}
+\usepackage[
+  backend=biber,
+  style=gost-numeric,
+  sorting=none,
+  language=auto,
+  autolang=other,
+  bibencoding=utf8
+]{biblatex}
+\DeclareLanguageMapping{russian}{russian-gost}
+\urlstyle{same}
+
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\setcounter{secnumdepth}{3}
+\setcounter{tocdepth}{2}
+
+\usepackage[explicit]{titlesec}
+\newcommand{\headinghyphenpenalties}{%
+  \hyphenpenalty=10000%
+  \exhyphenpenalty=10000%
+  \relax%
+}
+\titleformat{\chapter}[block]
+  {\bfseries\centering\headinghyphenpenalties}
+  {\thechapter}
+  {1em}
+  {\MakeUppercase{#1}}
+\titleformat{name=\chapter,numberless}[block]
+  {\bfseries\centering\headinghyphenpenalties}
+  {}
+  {0pt}
+  {\MakeUppercase{#1}}
+\titlespacing*{\chapter}{0pt}{0pt}{20pt}
+\titleformat{\section}[block]
+  {\bfseries\headinghyphenpenalties}
+  {\thesection}
+  {1em}
+  {#1}
+\titlespacing*{\section}{0pt}{0.7\baselineskip}{0.5\baselineskip}
+\titleformat{\subsection}[block]
+  {\bfseries\headinghyphenpenalties}
+  {\thesubsection}
+  {1em}
+  {#1}
+\titlespacing*{\subsection}{0pt}{0.7\baselineskip}{0.5\baselineskip}
+\titleformat{\subsubsection}[block]
+  {\bfseries\headinghyphenpenalties}
+  {\thesubsubsection}
+  {1em}
+  {#1}
+\titlespacing*{\subsubsection}{0pt}{0.7\baselineskip}{0.5\baselineskip}
+% Фиксируем название раздела table of contents строго как «Содержание».
+% Для polyglossia задаем имя через русские captions и дополнительно в BeginDocument.
+\gappto\captionsrussian{\renewcommand{\contentsname}{Содержание}}
+\AtBeginDocument{\renewcommand{\contentsname}{Содержание}}
+
+% ГОСТ: формулы с визуально отделенными интервалами, единые интервалы float-элементов.
+\setlength{\abovedisplayskip}{\baselineskip}
+\setlength{\belowdisplayskip}{\baselineskip}
+\setlength{\abovedisplayshortskip}{\baselineskip}
+\setlength{\belowdisplayshortskip}{\baselineskip}
+\setlength{\textfloatsep}{\baselineskip}
+\setlength{\floatsep}{0.8\baselineskip}
+\setlength{\intextsep}{0.8\baselineskip}
+
+% Уменьшает переполнения строк без изменения полей и кегля.
+\emergencystretch=2em
+\tolerance=1600
+
+\usepackage{listings}
+\lstdefinestyle{codestyle}{
+  basicstyle=\ttfamily\scriptsize,
+  backgroundcolor=\color{cCodeBg},
+  keywordstyle=\color{cCodeKw}\bfseries,
+  stringstyle=\color{cCodeStr},
+  commentstyle=\color{cCodeCmt}\itshape,
+  numberstyle=\tiny\color{cCodeNum},
+  numbers=left,
+  numbersep=8pt,
+  showstringspaces=false,
+  breaklines=true,
+  breakatwhitespace=false,
+  postbreak=\mbox{\textcolor{cCodeNum}{$\hookrightarrow$}\space},
+  columns=fullflexible,
+  keepspaces=true,
+  frame=single,
+  rulecolor=\color{cBorder},
+  framesep=4pt,
+  xleftmargin=14pt,
+  xrightmargin=2pt,
+  aboveskip=8pt,
+  belowskip=8pt,
+  tabsize=2,
+  extendedchars=true,
+  inputencoding=utf8
+}
+\lstset{style=codestyle}
+\AtBeginDocument{\counterwithin{lstlisting}{chapter}}
+\renewcommand{\lstlistingname}{Листинг}
+
+% Оформление пояснений под формулами по ГОСТ 6.8.2.
+\newcommand{\where}{\par\noindent\hspace*{\parindent}где\ }
+\newcommand{\whereitem}[2]{%
+  \ifhmode\else\noindent\hspace*{\parindent}\fi
+  #1 \textemdash\ #2;\par
+}
+\newcommand{\whereitemlast}[2]{%
+  \ifhmode\else\noindent\hspace*{\parindent}\fi
+  #1 \textemdash\ #2.\par
+}

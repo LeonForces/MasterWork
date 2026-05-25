@@ -1,0 +1,837 @@
+\chapter{ТЕОРЕТИЧЕСКИЕ ПРЕДПОСЫЛКИ, МОДЕЛИ И МЕТОДОЛОГИЯ}
+\label{ch:model_algorithm}
+
+\section{Формальная модель конвейера обработки}
+\label{sec:formal_pipeline}
+
+Сквозной маршрут платформы графически представлен на рисунке~\ref{fig:ch2_pipeline}: от приема RTSP-потока до фиксации события в БД и его асинхронной доставки во внешний контур. Эта схема используется как опорная при формализации модели и при описании реализации в главе~\ref{ch:implementation}.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=6mm and 7mm,
+    every node/.style={font=\small},
+    stage/.style={
+        draw=cBorder, line width=0.4pt, rounded corners=2pt,
+        fill=cBox, text=cText,
+        minimum width=22mm, minimum height=11mm,
+        align=center, inner sep=3pt
+    },
+    sink/.style={stage, fill=cBoxAcc},
+    src/.style={stage, fill=cBoxAlt},
+    arr/.style={-{Stealth[length=2.2mm]}, draw=cArrow, line width=0.5pt}
+]
+\node[src] (cam) {RTSP\\поток};
+\node[stage, right=of cam] (det) {Детектор\\YOLO};
+\node[stage, right=of det] (trk) {Сопровождение\\DeepSORT};
+\node[stage, right=of trk] (rule) {Правиловой\\движок};
+\node[stage, below=10mm of rule] (out) {\texttt{event\_outbox}\\(PostgreSQL)};
+\node[stage, left=of out] (br) {Брокер\\RabbitMQ};
+\node[sink, left=of br] (wh) {HTTP-\\получатель};
+\draw[arr] (cam) -- (det);
+\draw[arr] (det) -- node[above,font=\tiny]{bbox} (trk);
+\draw[arr] (trk) -- node[above,font=\tiny]{траект.} (rule);
+\draw[arr] (rule) -- node[right,font=\tiny]{событие} (out);
+\draw[arr] (out) -- node[above,font=\tiny]{публ.} (br);
+\draw[arr] (br) -- node[above,font=\tiny]{дост.} (wh);
+\end{tikzpicture}
+\caption{Сквозной конвейер обработки видеопотока и доставки событий}
+\label{fig:ch2_pipeline}
+\end{figure}
+
+Платформа рассматривается как композиция взаимосвязанных функций
+\begin{equation}
+\Phi = \Phi_{\text{outbox}} \circ \Phi_{\text{rules}} \circ \Phi_{\text{track}} \circ \Phi_{\text{detect}} \circ \Phi_{\text{capture}},
+\end{equation}
+\where
+\whereitem{\(i \in \{1, \dots, N\}\)}{индекс камеры}
+\whereitemlast{\(\Phi\)}{сквозной конвейер обработки видеопотока для камеры \(i\)} \cite{fastapi_docs,pyav_docs,ultralytics_docs}
+
+Для камеры \(i\) в момент времени \(t\) на вход поступает поток кадров \(x^i_t\). Стадия захвата и нормализации формирует последовательность
+\begin{equation}
+\hat{x}^i_t = \Phi_{\text{capture}}(x^i_t, m_i),
+\end{equation}
+\where
+\whereitemlast{\(m_i\)}{метаданные источника: временная зона, целевой FPS и стратегия переподключения}
+
+На критическом пути применяется политика замещения последним актуальным кадром: очередь между захватом и инференсом ограничена размером 1. Формально буфер \(\mathcal{Q}_i\) в момент \(t\) определяется как
+\begin{equation}
+\mathcal{Q}_i(t) =
+\begin{cases}
+\{\hat{x}^i_t\}, & \text{если буфер пуст;}\\
+\{\hat{x}^i_t\}, & \text{если буфер содержит устаревший кадр.}
+\end{cases}
+\end{equation}
+Такой режим эквивалентен оператору замещения последнего элемента и ограничивает накопление задержки \cite{ffmpeg_docs}.
+
+Детектор формирует множество кандидатов
+\begin{equation}
+\mathcal{D}^i_t = \Phi_{\text{detect}}(\hat{x}^i_t;\theta_d),
+\end{equation}
+\where
+\whereitemlast{\(\theta_d\)}{параметры нейросетевой модели класса YOLO} \cite{redmon2016yolo,redmon2018yolov3,ultralytics_docs}
+
+Модуль сопровождения преобразует детекции в траектории:
+\begin{equation}
+\mathcal{T}^i_t = \Phi_{\text{track}}(\mathcal{D}^i_t, \mathcal{T}^i_{t-1}; \theta_t).
+\end{equation}
+Результатом являются активные треки с устойчивыми \texttt{track\_id} и обновленными состояниями \cite{bewley2016sort,wojke2017deepsort}.
+
+Правиловой движок вычисляет предикаты событий:
+\begin{equation}
+\mathcal{E}^i_t = \Phi_{\text{rules}}(\mathcal{T}^i_t, \mathcal{Z}_i, \mathcal{R}_i),
+\end{equation}
+\where
+\whereitem{\(\mathcal{Z}_i\)}{геометрия зон и линий контроля камеры \(i\)}
+\whereitemlast{\(\mathcal{R}_i\)}{конфигурация правил событийного анализа камеры \(i\)}
+
+Наконец, выход конвейера фиксируется транзакционно:
+\begin{equation}
+(\texttt{events}, \texttt{event\_outbox}) = \Phi_{\text{outbox}}(\mathcal{E}^i_t).
+\end{equation}
+Тем самым обеспечивается логическая атомарность между фактом обнаруженного события и фактом его последующей публикации во внешний брокер \cite{transactional_outbox,rabbitmq_docs}.
+
+\section{Обоснование архитектуры и технологического стека}
+\label{sec:stack_rationale}
+
+В данном разделе формализуется выбор архитектурного решения и технологического стека платформы. Согласно методическим рекомендациям, во второй главе ВКР должна быть не только приведена архитектура и используемый набор технологий, но и обосновано, почему выбраны именно они. Обоснование строится на трех уровнях: архитектурный паттерн, алгоритмическое ядро и инфраструктурный стек.
+
+\subsection{Архитектурный паттерн}
+
+Платформа реализована в виде набора слабо связанных микросервисов, взаимодействующих через явно описанные программные контракты. Сравнение основных архитектурных альтернатив для рассматриваемого класса задач приведено в таблице~\ref{tab:arch_pattern_choice}.
+
+\begin{table}[H]
+\caption{Сравнение архитектурных паттернов}
+\label{tab:arch_pattern_choice}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.27\textwidth}X}
+\toprule
+Паттерн & Оценка применимости \\
+\midrule
+Монолитное приложение & Простое развертывание, но смешение алгоритмического и интеграционного контуров повышает риск каскадных отказов и затрудняет независимое масштабирование \\
+Модульный монолит & Снижает связность по сравнению с обычным монолитом, однако сохраняет общую модель отказов и общий контур исполнения \\
+Микросервисы & Изолируют контуры обработки видео, конфигурации и интеграции; обеспечивают независимое масштабирование, но требуют надежного транспорта сообщений и наблюдаемости \\
+Serverless / FaaS & Пригодны для эпизодических задач, но плохо согласуются с непрерывной потоковой обработкой видеоданных \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Для платформы видеоаналитики реального времени выбран микросервисный архитектурный шаблон с разделением на контур управления (управление, конфигурация, доступ) и контур обработки данных (обработка видео, генерация и доставка событий). Такое разделение соответствует рекомендациям инженерной литературы по построению событийно-ориентированных систем~\cite{richardson_microservices,transactional_outbox} и обеспечивает выполнение архитектурных факторов, сформулированных в главе 1: отказ интеграционного контура не должен блокировать аналитическое ядро, а замена детектора или модуля сопровождения должна быть локальным изменением.
+
+\subsection{Алгоритмическое ядро: детекция и сопровождение}
+
+Выбор алгоритмов обнаружения и сопровождения объектов рассмотрен в разделе~\ref{sec:related_work} главы~1. Здесь формализуем критерии и итоговое решение в табличной форме (таблица~\ref{tab:algo_choice}).
+
+\begin{table}[H]
+\caption{Обоснование выбора алгоритмов обнаружения и сопровождения}
+\label{tab:algo_choice}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.21\textwidth} >{\raggedright\arraybackslash}p{0.23\textwidth} X@{}}
+\toprule
+Подсистема & Выбранный метод & Ключевые причины выбора \\
+\midrule
+Детектор объектов & YOLO-семейство (одноэтапный)~\cite{redmon2016yolo,redmon2018yolov3,ultralytics_docs} & Высокая скорость инференса, многомасштабное представление признаков, доступность открытых реализаций, возможность дообучения на предметных данных, в том числе для малых объектов (БПЛА) \\
+Сопровождение объектов & DeepSORT-подход на основе фильтра Калмана и признаков внешнего вида~\cite{wojke2017deepsort,kalman1960,kuhn1955hungarian} & Сочетание кинематического прогноза и признаков внешнего вида снижает число переключений идентификаторов (ID-switches) при перекрытиях; формальная процедура ассоциации совместима с гейтингом и многокамерной изоляцией \\
+Событийный анализ & Правиловой движок над траекториями~\cite{transactional_outbox} & Интерпретируемость событий, простота адаптации к локальным регламентам, независимость от конкретной реализации детектора и модуля сопровождения \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Альтернативные подходы (двухэтапные и трансформерные детекторы, end-to-end событийные нейросети) обладают преимуществами по точности на сложных сценах, однако предъявляют существенно более высокие требования к вычислительным ресурсам и объему размеченных данных по событиям, что не согласуется с целями практико-ориентированного исследовательского стенда.
+
+\subsection{Веб-фреймворк управляющего сервиса}
+
+Сервис \texttt{api} реализует управляющий контур: аутентификацию, авторизацию, управление конфигурацией камер, зон, правил и доступом к журналу событий. Сравнение основных альтернатив для Python-экосистемы приведено в таблице~\ref{tab:framework_choice}.
+
+\begin{table}[H]
+\caption{Сравнение веб-фреймворков для управляющего сервиса}
+\label{tab:framework_choice}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.18\textwidth}X}
+\toprule
+Фреймворк & Оценка применимости \\
+\midrule
+Django & Полнофункциональный фреймворк с ORM и admin-панелью, но избыточен для тонкого API-контура и ограничен по асинхронной модели исполнения \\
+Flask & Минималистичный фреймворк, но требует ручной реализации валидации, асинхронности и автодокументации API \\
+FastAPI~\cite{fastapi_docs} & Современный асинхронный фреймворк, основанный на Starlette и Pydantic; обеспечивает автоматическую генерацию OpenAPI-схемы, строгую валидацию входных данных и хорошую совместимость с асинхронным стеком \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Для управляющего сервиса выбран FastAPI~\cite{fastapi_docs} в сочетании с SQLAlchemy и Alembic~\cite{sqlalchemy_docs,alembic_docs}. Основные мотивы: автоматическая генерация спецификации OpenAPI и контроль контракта на этапе разработки; нативная асинхронная модель исполнения, согласованная с типичной нагрузкой управляющего API; типобезопасные модели данных на основе Pydantic, что снижает риск рассинхронизации схемы и кода.
+
+\subsection{Система управления базами данных}
+
+Хранилище платформы обслуживает структурированные сущности (пользователи, роли, камеры, зоны, правила, события) и таблицу \texttt{event\_outbox}, требующую транзакционной согласованности с записью событий. Сравнение СУБД приведено в таблице~\ref{tab:db_choice}.
+
+\begin{table}[H]
+\caption{Сравнение систем управления базами данных}
+\label{tab:db_choice}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.18\textwidth}X}
+\toprule
+СУБД & Оценка применимости \\
+\midrule
+SQLite & Подходит для прототипов, но не предназначена для конкурентной нагрузки и работы под несколькими сервисами \\
+\shortstack[l]{MySQL/\\MariaDB} & Зрелая реляционная СУБД, однако ряд особенностей реализации (например, поведение блокировок, поддержка JSON и расширений) уступает PostgreSQL \\
+PostgreSQL & Реляционная СУБД с богатой поддержкой расширений, типов JSON/JSONB и продвинутых индексов; обеспечивает надежную транзакционную семантику, необходимую для шаблона транзакционной таблицы исходящих сообщений \\
+MongoDB & Документная СУБД, удобная для гибких схем, но менее естественна для строго транзакционной фиксации \texttt{events + event\_outbox} в одной операции \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Выбор PostgreSQL~\cite{postgresql_docs} обусловлен необходимостью атомарной фиксации записей в \texttt{events} и \texttt{event\_outbox} в рамках одной транзакции, а также удобством работы с полем полезной нагрузки \texttt{payload} в формате JSONB и наложением уникального ограничения на поле \texttt{dedup\_key}. Эти возможности непосредственно используются в формальной модели надежной доставки.
+
+\subsection{Брокер сообщений}
+
+Интеграционный контур платформы строится на основе шаблона транзакционной таблицы исходящих сообщений с асинхронной публикацией доменных событий во внешние системы. В таблице~\ref{tab:broker_choice} приведено сопоставление основных вариантов.
+
+\begin{table}[H]
+\caption{Сравнение брокеров сообщений}
+\label{tab:broker_choice}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.22\textwidth}X}
+\toprule
+Брокер & Оценка применимости \\
+\midrule
+Apache Kafka & Высокая пропускная способность и упорядоченные журналы, но избыточная инфраструктурная сложность для пилотного стенда с числом камер 1--10 \\
+Redis Streams & Простота развертывания, но менее зрелые гарантии надежной доставки и менее богатая модель маршрутизации \\
+RabbitMQ~\cite{rabbitmq_docs,rabbitmq_confirms,rabbitmq_dlq} & Зрелая модель маршрутизации через обменники, очереди и привязки, подтверждения публикации RabbitMQ и обменник недоставленных сообщений \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Выбор RabbitMQ обусловлен сочетанием подтвержденной публикации, штатной поддержки очередей недоставленных сообщений и достаточной для пилотного стенда пропускной способности~\cite{rabbitmq_docs,rabbitmq_confirms,rabbitmq_dlq}. Это позволяет реализовать формализованную в дальнейшем модель повторных попыток и приближенную оценку вероятности успешной доставки без введения избыточно сложной инфраструктуры.
+
+\subsection{Подсистема видеозахвата}
+
+Для приема RTSP-потоков и их декодирования сопоставлены три варианта: \texttt{OpenCV VideoCapture}, \texttt{GStreamer} и \texttt{FFmpeg/PyAV} (см. таблицу~\ref{tab:capture_alternatives} в главе~1). В платформе использован \texttt{FFmpeg/PyAV}~\cite{ffmpeg_docs,pyav_docs} как компромисс между управляемостью потока, зрелостью экосистемы и интеграцией с Python-контуром исполнения. Это решение позволяет реализовать политику замещения кадра последним актуальным кадром, формализованную в разделе~\ref{sec:formal_pipeline}.
+
+\subsection{Наблюдаемость и оркестрация}
+
+Для воспроизводимого развертывания и эксплуатационной приемки выбраны Docker Compose~\cite{docker_docs}, Prometheus~\cite{prometheus_docs} и Grafana~\cite{grafana_docs}. Docker Compose обеспечивает декларативное описание стенда и согласованность окружений между разработкой и приемочными прогонами; Prometheus реализует сбор и хранение временных рядов, Grafana - их визуализацию и настройку предупреждений. Альтернативы (Kubernetes, Datadog, ELK-стек) обладают большей мощностью, но для пилотного односерверного стенда вносят избыточную сложность сопровождения, не оправданную целями исследования.
+
+\subsection{Сводный технологический стек}
+
+Итоговый технологический стек платформы зафиксирован в таблице~\ref{tab:stack_summary}. Для каждой подсистемы указаны выбранное решение и ключевые источники, обосновывающие этот выбор.
+
+\begin{table}[H]
+\caption{Сводный технологический стек платформы}
+\label{tab:stack_summary}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.22\textwidth} >{\raggedright\arraybackslash}p{0.22\textwidth} X}
+\toprule
+Подсистема & Выбранное решение & Назначение и обоснование \\
+\midrule
+Управляющий API & FastAPI + SQLAlchemy + Alembic~\cite{fastapi_docs,sqlalchemy_docs,alembic_docs} & Тонкий асинхронный API с автогенерацией OpenAPI-схемы и строгой валидацией данных \\
+Хранилище данных & PostgreSQL~\cite{postgresql_docs} & Транзакционная фиксация \texttt{events + event\_outbox}, поддержка JSONB, уникальные индексы для дедупликации \\
+Брокер сообщений & RabbitMQ~\cite{rabbitmq_docs,rabbitmq_confirms,rabbitmq_dlq} & Подтвержденная публикация, маршрутизация по типам событий, штатная очередь недоставленных сообщений \\
+Видеозахват & FFmpeg и PyAV~\cite{ffmpeg_docs,pyav_docs} & Управляемый декодер RTSP с предсказуемым поведением при сбоях \\
+Детектор & YOLO-семейство~\cite{redmon2016yolo,redmon2018yolov3,ultralytics_docs} & Одноэтапная архитектура с приемлемой задержкой инференса \\
+Модуль сопровождения & DeepSORT-подход~\cite{wojke2017deepsort,kalman1960,kuhn1955hungarian} & Сочетание кинематического прогноза и признаков внешнего вида \\
+Метрики и мониторинг & Prometheus + Grafana~\cite{prometheus_docs,grafana_docs} & Эксплуатационная наблюдаемость и регламент приемки \\
+Оркестрация стенда & Docker Compose~\cite{docker_docs} & Декларативный воспроизводимый стенд для разработки и приемки \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Сводный стек согласован между собой: все компоненты имеют открытые реализации, поддерживают типовые контракты обмена данными (HTTP, AMQP, SQL) и обеспечивают совместное выполнение требований к надежности доставки, наблюдаемости и воспроизводимости стенда. Тем самым обеспечивается прямая связь между сформулированными в главе 1 требованиями и инженерным контуром, формализуемым ниже.
+
+Композиция сервисов и их связи показаны на рисунке~\ref{fig:ch2_c4_container} в нотации C4 (контейнерный уровень). Слева расположены внешние участники взаимодействия (камеры, оператор), в центре - управляющий контур (\texttt{api}, \texttt{ui}, PostgreSQL), справа - контур обработки событий (\texttt{analytics-worker}, RabbitMQ, \texttt{integration-worker}) и внешние получатели событий. Подсистема наблюдаемости (Prometheus и Grafana) собирает метрики со всех сервисов через интерфейсы \texttt{/metrics}.
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    every node/.style={font=\small},
+    cont/.style={
+        draw=cBorder, line width=0.4pt, rounded corners=2pt,
+        fill=cBox, text=cText,
+        minimum width=28mm, minimum height=11mm, align=center, inner sep=3pt
+    },
+    db/.style={cont, fill=cBoxAcc},
+    bus/.style={cont, fill=cBoxAlt},
+    obs/.style={cont, fill=cBoxAcc},
+    actor/.style={
+        draw=cBorder, line width=0.4pt, rounded corners=2pt,
+        fill=cBoxAlt, text=cText,
+        minimum width=20mm, minimum height=10mm, align=center, inner sep=3pt
+    },
+    arr/.style={-{Stealth[length=2.2mm]}, draw=cArrow, line width=0.5pt},
+    arrd/.style={-{Stealth[length=2.2mm]}, draw=cArrow, line width=0.4pt, dashed}
+]
+\node[actor] (cam) at (-6.5,2.2) {IP-камеры};
+\node[actor] (op)  at (-6.5,0.4) {Оператор};
+\node[actor] (ext) at (7.4,-1.6) {Внешние\\системы};
+\node[cont] (aw)  at (-3,2.2) {analytics-worker\\\footnotesize детекция, треки, правила};
+\node[cont] (ui)  at (-3,0.4) {ui\\\footnotesize React + nginx};
+\node[cont] (api) at ( 0.5,0.4) {api\\\footnotesize FastAPI, JWT, RBAC};
+\node[db]   (pg)  at ( 0.5,-1.6) {PostgreSQL\\\footnotesize events, event\_outbox};
+\node[bus]  (mq)  at ( 4,0.4) {RabbitMQ};
+\node[cont] (iw)  at ( 4,-1.6) {integration-worker\\\footnotesize публикация, повторы\\\footnotesize очередь\\\footnotesize недоставленных};
+\node[obs]  (prom) at (-3,-1.6) {Prometheus\\\footnotesize + Grafana};
+\draw[arr] (cam) -- node[above,font=\scriptsize]{RTSP} (aw);
+\draw[arr] (op)  -- (ui);
+\draw[arr] (ui)  -- node[above,font=\scriptsize]{REST} (api);
+\draw[arr] (api) -- node[right,font=\scriptsize]{SQL} (pg);
+\draw[arr] (aw) -| node[pos=0.25,above,font=\scriptsize]{outbox} (pg);
+\draw[arr] (pg) -- node[above,font=\scriptsize]{poll} (iw);
+\draw[arr] (iw) -- node[right,font=\scriptsize]{publish} (mq);
+\draw[arr] (mq.east) -- ++(0.6,0) |- node[pos=0.25,right,font=\scriptsize]{deliver} (ext);
+\draw[arrd] (aw) -- node[left,font=\scriptsize]{/metrics} (prom);
+\draw[arrd] (api) -- (prom);
+\draw[arrd] (iw) -- (prom);
+\end{tikzpicture}
+}
+\caption{Архитектура платформы (C4, контейнерный уровень)}
+\label{fig:ch2_c4_container}
+\end{figure}
+
+Диаграмма последовательности надежной асинхронной доставки события представлена на рисунке~\ref{fig:ch2_seq_outbox}. Транзакционная фиксация \texttt{events + event\_outbox} в одной операции БД обеспечивает атомарность факта возникновения события; последующая публикация в RabbitMQ и доставка HTTP-получателю выполняются асинхронно с возможностью повторов и перевода в очередь недоставленных сообщений при исчерпании попыток.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    every node/.style={font=\footnotesize},
+    actor/.style={
+        draw=cBorder, line width=0.4pt, rounded corners=2pt,
+        fill=cBoxAlt, text=cText,
+        minimum width=22mm, minimum height=8mm, align=center
+    },
+    msg/.style={-{Stealth[length=2mm]}, draw=cArrow, line width=0.4pt},
+    note/.style={font=\scriptsize\itshape, text=cText, align=center}
+]
+\node[actor] (aw)  at (0,0)   {analytics-worker};
+\node[actor] (db)  at (3.5,0) {PostgreSQL};
+\node[actor] (iw)  at (7,0)   {integration-worker};
+\node[actor] (mq)  at (10.5,0){RabbitMQ};
+\node[actor] (wh)  at (14,0)  {HTTP-\\получатель};
+\foreach \n in {aw,db,iw,mq,wh} {\draw[gray,dashed,line width=0.3pt] (\n.south) -- ++(0,-7);}
+
+\draw[msg] ($(aw.south)+(0,-0.5)$) -- node[above,font=\scriptsize]{INSERT events + event\_outbox (TX)} ($(db.south)+(0,-0.5)$);
+\node[note] at (1.7,-1.1) {фиксация};
+
+\draw[msg] ($(iw.south)+(0,-1.6)$) -- node[above,font=\scriptsize]{SELECT pending} ($(db.south)+(0,-1.6)$);
+\draw[msg] ($(db.south)+(0,-2.1)$) -- node[above,font=\scriptsize]{записи} ($(iw.south)+(0,-2.1)$);
+
+\draw[msg] ($(iw.south)+(0,-2.8)$) -- node[above,font=\scriptsize]{publish(event)} ($(mq.south)+(0,-2.8)$);
+\node[note] at (8.7,-3.3) {опубликовано};
+
+\draw[msg] ($(mq.south)+(0,-4)$) -- node[above,font=\scriptsize]{POST /webhook} ($(wh.south)+(0,-4)$);
+\draw[msg] ($(wh.south)+(0,-4.5)$) -- node[above,font=\scriptsize]{2xx} ($(mq.south)+(0,-4.5)$);
+
+\draw[msg] ($(iw.south)+(0,-5.4)$) -- node[above,font=\scriptsize]{UPDATE outbox set published\_at} ($(db.south)+(0,-5.4)$);
+
+\draw[msg,dashed] ($(wh.south)+(0,-6.2)$) -- node[above,font=\scriptsize,align=center]{ошибка $\rightarrow$ повтор с задержкой\\затем очередь недоставленных} ($(mq.south)+(0,-6.2)$);
+\end{tikzpicture}
+\caption{Диаграмма последовательности надежной доставки события через транзакционную таблицу исходящих сообщений}
+\label{fig:ch2_seq_outbox}
+\end{figure}
+
+\subsection{Логическая модель работы платформы}
+\label{subsec:logic_model}
+
+Логика работы платформы укрупненно описывается следующей последовательностью шагов:
+\begin{enumerate}
+    \item \textit{Управляющий контур.} Администратор системы через API регистрирует камеры, описывает геометрию зон и линий, задает набор правил событийного анализа и распределяет роли пользователей;
+    \item \textit{Активация камеры.} Сервис \texttt{analytics-worker} получает конфигурацию из API и инициирует прием RTSP-потока, политику декодирования и работу детектора;
+    \item \textit{Основной цикл обработки.} Для каждого актуального кадра выполняется последовательность «детекция $\rightarrow$ фильтрация классов $\rightarrow$ обновление модуля сопровождения $\rightarrow$ применение правил»;
+    \item \textit{Транзакционная фиксация.} При выполнении предиката правила в одной транзакции записываются строки в \texttt{events} и \texttt{event\_outbox}, что исключает потерю события на границе БД;
+    \item \textit{Асинхронная публикация.} Сервис \texttt{integration-worker} опрашивает \texttt{event\_outbox}, публикует сообщения в RabbitMQ через подтвержденный канал и обновляет статус записей;
+    \item \textit{Доставка во внешний контур.} Тот же сервис принимает сообщения из очереди \texttt{integration.webhook.v1}, выполняет HTTP-доставку внешнему получателю и фиксирует попытки в \texttt{delivery\_attempts};
+    \item \textit{Контроль и наблюдаемость.} Все сервисы экспортируют метрики Prometheus и журналы, на основе которых рассчитываются эксплуатационные показатели платформы;
+    \item \textit{Операторские сценарии.} Сервис пользовательского интерфейса предоставляет роль-зависимый интерфейс для мониторинга камер, журнала событий и аналитических отчетов.
+\end{enumerate}
+
+Описанная логика непосредственно соответствует формальному определению конвейера~$\Phi$ из раздела~\ref{sec:formal_pipeline} и связывает обоснованный технологический стек с математической моделью обработки.
+
+\section{Модель детекции объектов и фильтрации классов}
+
+\subsection{Выход детектора и базовые обозначения}
+
+Для кадра \(\hat{x}_t\) детектор возвращает множество боксов
+\begin{equation}
+\mathcal{D}_t = \{d_k\}_{k=1}^{K_t}, \quad
+d_k = (b_k, c_k, p_k),
+\end{equation}
+\where
+\whereitem{\(b_k = (x_k, y_k, w_k, h_k)\)}{прямоугольник локализации объекта}
+\whereitem{\(c_k\)}{класс обнаруженного объекта}
+\whereitemlast{\(p_k \in [0,1]\)}{оценка достоверности детекции}
+
+Для подавления шумовых кандидатов используется порог
+\begin{equation}
+\mathcal{D}^{(\tau)}_t = \{d_k \in \mathcal{D}_t \mid p_k \ge \tau_{\text{conf}}\}.
+\end{equation}
+После пороговой фильтрации применяется NMS по IoU:
+\begin{equation}
+\operatorname{IoU}(b_a,b_b) = \frac{|b_a \cap b_b|}{|b_a \cup b_b|},
+\end{equation}
+и кандидаты с \(\operatorname{IoU} > \tau_{\text{iou}}\) подавляются в пользу бокса с большим \(p_k\) \cite{redmon2018yolov3,coco_dataset}.
+
+\subsection{Фильтрация целевых классов}
+
+Множество целевых классов не является жестко зашитой константой алгоритма и задается профилем применения платформы:
+\begin{equation}
+\mathcal{C}_{\text{target}}^{(p)} \subseteq \mathcal{C}_{\text{model}},
+\end{equation}
+\where
+\whereitem{\(p\)}{профиль применения платформы}
+\whereitemlast{\(\mathcal{C}_{\text{model}}\)}{множество классов, поддерживаемых подключенной моделью детекции}
+
+Для базового охранного профиля используется множество
+\begin{equation}
+\mathcal{C}_{\text{target}}^{(\text{security})} =
+\{\texttt{person}, \texttt{vehicle}\},
+\end{equation}
+\where
+\whereitemlast{\texttt{vehicle}}{агрегированный класс транспорта (\texttt{car}, \texttt{bus}, \texttt{truck}, \texttt{motorcycle}) на уровне API-конфигурации}
+Для демонстрационного профиля обнаружения БПЛА используется другое множество целевых классов:
+\begin{equation}
+\mathcal{C}_{\text{target}}^{(\text{uav})} =
+\{\texttt{bird}, \texttt{drone}\}.
+\end{equation}
+
+Итоговое множество детекций, передаваемых в модуль сопровождения для выбранного профиля \(p\):
+\begin{equation}
+\mathcal{D}^{*}_t(p) =
+\{d_k \in \mathcal{D}^{(\tau)}_t \mid c_k \in \mathcal{C}_{\text{target}}^{(p)}\}.
+\end{equation}
+Выбор CPU-first профиля для разработки означает, что \(\tau_{\text{conf}}\), входное разрешение и частота инференса подбираются так, чтобы сохранять ограничение по задержке в целевых сценариях \cite{ultralytics_docs}.
+
+\subsection{Оценка качества детекции}
+
+Для оффлайн-оценки параметров детектора вводится стандартная метрика среднего качества локализации:
+\begin{equation}
+\operatorname{mAP} = \frac{1}{|\mathcal{C}_{\text{target}}|}\sum_{c \in \mathcal{C}_{\text{target}}}\operatorname{AP}_c,
+\end{equation}
+\where
+\whereitemlast{\(\operatorname{AP}_c\)}{площадь под кривой precision-recall для класса \(c\) при заданных порогах IoU}
+
+Однако в рамках платформы реального времени метрики детекции анализируются совместно с показателями последующих этапов: устойчивостью траекторий и точностью генерации событий. Это исключает ситуацию, когда рост mAP не приводит к улучшению эксплуатационного качества контура.
+
+\section{Модель сопровождения объектов}
+
+\subsection{Состояние трека и прогноз}
+
+Состояние трека \(j\) в модели DeepSORT задается вектором
+\begin{equation}
+\mathbf{s}_{j,t} = [u, v, \gamma, h, \dot{u}, \dot{v}, \dot{\gamma}, \dot{h}]^\top,
+\end{equation}
+\where
+\whereitem{\((u,v)\)}{центр бокса}
+\whereitem{\(\gamma\)}{отношение сторон бокса}
+\whereitem{\(h\)}{высота бокса}
+\whereitemlast{\(\dot{u}, \dot{v}, \dot{\gamma}, \dot{h}\)}{скорости изменения соответствующих компонент} \cite{wojke2017deepsort}
+
+Прогноз состояния выполняется линейной динамической моделью (фильтр Калмана):
+\begin{equation}
+\mathbf{s}_{j,t|t-1} = \mathbf{F}\mathbf{s}_{j,t-1|t-1} + \mathbf{w}_t,
+\end{equation}
+\where
+\whereitemlast{\(\mathbf{w}_t\)}{шум процесса}
+
+\subsection{Ассоциация детекций и траекторий}
+
+Для пары «траектория--детекция» рассчитывается композиционная стоимость:
+\begin{equation}
+\mathcal{L}(j,k) = \lambda \cdot d_{\text{motion}}(j,k) + (1-\lambda)\cdot d_{\text{app}}(j,k),
+\end{equation}
+\where
+\whereitem{\(d_{\text{motion}}\)}{расстояние Махаланобиса относительно прогноза}
+\whereitemlast{\(d_{\text{app}}\)}{косинусная дистанция признаков внешнего вида}
+
+Оптимальное сопоставление выполняется венгерским алгоритмом \cite{kuhn1955hungarian}. Пары с превышением порогов по \(d_{\text{motion}}\) или \(d_{\text{app}}\) отбрасываются.
+
+\subsection{Устойчивость идентификаторов и fallback-логика}
+
+Практическая устойчивость модуля сопровождения оценивается метриками \(ID\text{-}switches\), \(MOTA\), \(MOTP\) и долей прерванных траекторий \cite{bernardin2008motmetrics,motchallenge}.
+
+Для повышения устойчивости в контуре исполнения применяется fallback-логика:
+\begin{enumerate}
+    \item при кратковременной потере детекции траектория удерживается в состоянии \texttt{tentative/lost} до таймаута \(T_{\text{lost}}\);
+    \item при превышении \(T_{\text{lost}}\) траектория закрывается, но ее финальные атрибуты сохраняются для правил \texttt{dwell\_time};
+    \item при деградации appearance-эмбеддингов вес \(\lambda\) динамически смещается в сторону кинематической составляющей.
+\end{enumerate}
+
+Изоляция состояния по камерам формально задается как
+\begin{equation}
+\mathcal{T}_t = \bigsqcup_{i=1}^{N}\mathcal{T}^i_t,
+\end{equation}
+то есть объединение траекторий без пересечения пространств идентификаторов между различными камерами.
+
+\section{Правиловая модель событий и дедупликация}
+
+\subsection{Событие как предикат над траекторией}
+
+Каждое правило \(r \in \mathcal{R}_i\) задает предикат
+\begin{equation}
+P_r(\tau_j, \mathcal{Z}_i, t) \in \{0,1\}.
+\end{equation}
+Если \(P_r = 1\), создается событие
+\begin{equation}
+e =
+\begin{aligned}[t]
+(&\texttt{event\_id},\ \texttt{event\_type},\ \texttt{camera\_id},\ \texttt{track\_id},\\
+ &\texttt{occurred\_at},\ \texttt{severity},\ \texttt{dedup\_key},\ \dots).
+\end{aligned}
+\end{equation}
+\subsection{Правило \texttt{zone\_enter}}
+
+Для полигона зоны \(Z\) и траектории \(\tau_j\) используется предикат входа:
+\begin{equation}
+P_{\text{zone\_enter}} = \mathbb{1}\{p_{t-1}\notin Z \land p_t \in Z\},
+\end{equation}
+\where
+\whereitemlast{\(p_t\)}{реперная точка объекта (центр нижней грани бокса)}
+
+\subsection{Правило \texttt{line\_cross}}
+
+Для ориентированной линии \(L = (a,b)\) вычисляется знак функции ориентации:
+\begin{equation}
+\sigma_t = \operatorname{sign}\left((b-a)\times(p_t-a)\right).
+\end{equation}
+Факт пересечения фиксируется при смене знака \(\sigma_{t-1}\sigma_t < 0\) с учетом минимального смещения по времени, чтобы подавить дрожание около линии.
+
+\subsection{Правило \texttt{dwell\_time}}
+
+Для зоны \(Z\) и порога \(\Delta T_{\min}\) правило задается:
+\begin{equation}
+P_{\text{dwell}} = \mathbb{1}\{p_t \in Z \land (t - t_{\text{enter}}) \ge \Delta T_{\min}\}.
+\end{equation}
+Событие формируется однократно при первом выполнении условия.
+
+\subsection{Модель \texttt{dedup\_key}}
+
+Для подавления повторной генерации вводится функция
+\begin{equation}
+\kappa(e) = \texttt{camera\_id} \,\Vert\, \texttt{rule\_id} \,\Vert\, \texttt{track\_id} \,\Vert\, \texttt{bucket}(t),
+\end{equation}
+\where
+\whereitemlast{\(\texttt{bucket}(t)\)}{опциональный временной бакет для правил длительности}
+
+Если ключ \(\kappa(e)\) уже присутствует в скользящем окне дедупликации, событие в таблицу исходящих сообщений не добавляется. Формально:
+\begin{equation}
+\text{emit}(e) = \mathbb{1}\{\kappa(e)\notin \mathcal{K}_{\text{window}}\}.
+\end{equation}
+\section{Модель надежной доставки: исходящие сообщения, повторы и очередь недоставленных сообщений}
+
+\subsection{Транзакционная фиксация события}
+
+Пусть транзакция \(T\) вставляет записи в таблицы \texttt{events} и \texttt{event\_outbox}. Гарантия атомарности:
+\begin{equation}
+\begin{aligned}
+\operatorname{commit}(T) \Rightarrow {}&
+(\exists e \in \texttt{events})\ \land \\
+&(\exists o \in \texttt{event\_outbox}: o.\texttt{event\_id}=e.\texttt{event\_id}).
+\end{aligned}
+\end{equation}
+При откате транзакции (rollback) обе записи отсутствуют \cite{transactional_outbox,richardson_microservices}.
+
+\subsection{Повторные попытки публикации}
+
+Для записи таблицы исходящих сообщений со счетчиком попыток \(n\) время следующей отправки:
+\begin{equation}
+t_{\text{next}} = t_0 + \min\left(t_{\max}, t_{\text{base}}\cdot 2^n\right).
+\end{equation}
+Политика ограничивается \(n \le 10\), после чего запись переводится в конечное состояние ошибки.
+
+\subsection{Модель потребителя и очереди недоставленных сообщений}
+
+Интеграционный потребитель очереди HTTP-доставки обрабатывает сообщение и отправляет брокеру подтверждение обработки (ACK) только после успешной доставки HTTP-получателю. При исчерпании лимита попыток сообщение маршрутизируется в очередь недоставленных сообщений \cite{rabbitmq_confirms,rabbitmq_dlq}.
+
+Для прикладной надежности используется приближенная оценка вероятности успешной доставки:
+\begin{equation}
+P_{\text{succ}} = 1 - \prod_{k=1}^{n}(1-p_k),
+\end{equation}
+\where
+\whereitemlast{\(p_k\)}{вероятность успешной доставки на \(k\)-й попытке}
+Рост \(n\) увеличивает \(P_{\text{succ}}\), но повышает задержку и нагрузку на внешний контур.
+
+\section{Оценка вычислительной сложности и ресурсной нагрузки}
+
+\subsection{Сложность стадий конвейера}
+
+Для практического применения важно оценить не только формальную корректность модели, но и ее вычислительную стоимость. Введем обозначения:
+\begin{itemize}
+    \item \(F_i\) - входной FPS камеры \(i\);
+    \item \(K_t\) - число детекций в кадре \(t\);
+    \item \(M_t\) - число активных траекторий;
+    \item \(R\) - число правил для камеры.
+\end{itemize}
+
+Стадия захвата и декодирования имеет стоимость, пропорциональную числу декодируемых кадров:
+\begin{equation}
+\mathcal{O}_{\text{capture}} \sim \mathcal{O}(F_i).
+\end{equation}
+При политике замещения последним актуальным кадром часть кадров отбрасывается до инференса, что снижает нагрузку на последующие этапы конвейера.
+
+Стадия детекции имеет наибольшую вычислительную стоимость и определяется архитектурой модели и входным разрешением. В инженерной оценке ее удобно учитывать через измеряемую задержку \(\Delta t_{\text{infer}}\), а не через аналитическую асимптотику.
+
+Для сопровождения ключевым является шаг ассоциации «детекции--треки». При использовании венгерского алгоритма верхняя оценка:
+\begin{equation}
+\mathcal{O}_{\text{assoc}} \sim \mathcal{O}(\max(K_t, M_t)^3).
+\end{equation}
+На практике после гейтинга и фильтрации матрица стоимости разрежена, поэтому фактическая стоимость ниже.
+
+Стоимость правилового движка в базовой реализации:
+\begin{equation}
+\mathcal{O}_{\text{rules}} \sim \mathcal{O}(M_t \cdot R),
+\end{equation}
+поскольку каждая активная траектория проверяется по набору правил камеры.
+
+\subsection{Задержка сквозного контура}
+
+Суммарная задержка от объекта к событию представляется как
+\begin{equation}
+\Delta t_{\text{obj}\to\text{event}} =
+\Delta t_{\text{capture}} +
+\Delta t_{\text{queue}} +
+\Delta t_{\text{infer}} +
+\Delta t_{\text{track}} +
+\Delta t_{\text{rules}} +
+\Delta t_{\text{store}}.
+\end{equation}
+Если очередь между захватом и инференсом не ограничена, \(\Delta t_{\text{queue}}\) может расти неограниченно. В предлагаемой модели размер очереди фиксирован единицей, поэтому:
+\begin{equation}
+\Delta t_{\text{queue}} \le \frac{1}{F_i},
+\end{equation}
+что гарантирует отсутствие лавинообразного накопления задержки.
+
+\subsection{Ресурсные ограничения на одном узле}
+
+Односерверная модель требует явного баланса между числом камер и доступными ресурсами:
+\begin{itemize}
+    \item центральный процессор (CPU): декодирование, сопровождение объектов, правила, сериализация событий;
+    \item аппаратный ускоритель: инференс детектора при соответствующем стенде;
+    \item оперативная память (RAM): буферы кадров, состояния траекторий, кэш конфигурации;
+    \item дисковый ввод-вывод: запись событий, таблицы исходящих сообщений и артефактов.
+\end{itemize}
+
+Для камеры \(i\) можно использовать приближенную модель использования памяти:
+\begin{equation}
+Mem_i \approx Mem_{\text{frame}} + Mem_{\text{tracks}} + Mem_{\text{exec}},
+\end{equation}
+\where
+\whereitem{\(Mem_{\text{frame}}\)}{память, занимаемая кадровым буфером}
+\whereitem{\(Mem_{\text{tracks}}\)}{память состояния активных траекторий}
+\whereitemlast{\(Mem_{\text{exec}}\)}{накладные расходы модели и библиотек в контуре исполнения}
+
+Эта оценка используется для первичной оценки емкости стенда перед приемочными прогонами.
+
+\section{Псевдокод целевого алгоритма}
+
+\subsection{Алгоритм обработки одной камеры}
+
+Ниже приведен укрупненный алгоритм контура исполнения для камеры \(i\):
+
+\begin{enumerate}
+    \item Инициализировать источник потока, модуль сопровождения и локальный кэш правил.
+    \item Пока камера активна:
+    \begin{enumerate}
+        \item Получить очередной кадр из RTSP/MP4.
+        \item Нормализовать временную метку и записать кадр в буфер последнего актуального кадра (замещая предыдущий).
+        \item Если есть актуальный кадр для инференса, запустить детектор.
+        \item Отфильтровать детекции по порогам достоверности и IoU, а также по целевым классам.
+        \item Обновить модуль сопровождения и получить список активных траекторий.
+        \item Проверить правила \texttt{zone\_enter}, \texttt{line\_cross}, \texttt{dwell\_time}.
+        \item Для каждого нового факта сформировать \texttt{dedup\_key}.
+        \item Если ключ не встречался в окне дедупликации, в одной транзакции записать:
+        \begin{enumerate}
+            \item запись в \texttt{events};
+            \item запись в \texttt{event\_outbox}.
+        \end{enumerate}
+    \end{enumerate}
+\end{enumerate}
+
+Такое представление соответствует архитектурной декомпозиции из главы 3 и позволяет связать математическую модель с кодовой реализацией модулей.
+
+\subsection{Алгоритм работы публикатора исходящих сообщений}
+
+\begin{enumerate}
+    \item Выбрать ограниченную партию записей таблицы исходящих сообщений со статусом \texttt{pending/retry}.
+    \item Для каждой записи:
+    \begin{enumerate}
+        \item Сформировать ключ маршрутизации вида \texttt{event.<type>.v1}.
+        \item Опубликовать сообщение в обменник \texttt{events.topic.v1}.
+        \item При подтверждении публикации отметить запись как \texttt{published}.
+        \item При ошибке увеличить \texttt{retry\_count} и вычислить \texttt{next\_retry\_at} по политике задержки между повторами.
+    \end{enumerate}
+    \item Повторять цикл с малым интервалом опроса.
+\end{enumerate}
+
+\subsection{Алгоритм доставки HTTP-получателю}
+
+\begin{enumerate}
+    \item Получить сообщение из очереди \texttt{integration.webhook.v1}.
+    \item Выполнить HTTP POST во внешний конечный адрес.
+    \item Зафиксировать попытку в \texttt{delivery\_attempts}.
+        \item При успехе отправить брокеру подтверждение обработки (ACK).
+    \item При ошибке:
+    \begin{enumerate}
+        \item если лимит попыток не исчерпан, инициировать повтор;
+        \item иначе отправить сообщение в очередь недоставленных сообщений и пометить конечную ошибку доставки.
+    \end{enumerate}
+\end{enumerate}
+
+\section{Параметризация и калибровка модели}
+
+\subsection{Набор настраиваемых параметров}
+
+Для воспроизводимых экспериментов фиксируется конфигурационный вектор:
+\begin{equation}
+\Theta = \{\tau_{\text{conf}}, \tau_{\text{iou}}, \lambda, T_{\text{lost}}, \Delta T_{\min}, n_{\max}, t_{\text{base}}, t_{\max}\}.
+\end{equation}
+\where
+\whereitem{\(\tau_{\text{conf}}\)}{порог достоверности детекции}
+\whereitem{\(\tau_{\text{iou}}\)}{порог IoU для NMS}
+\whereitem{\(\lambda\)}{баланс признаков движения и внешнего вида в ассоциации}
+\whereitem{\(T_{\text{lost}}\)}{таймаут удержания потерянного трека}
+\whereitem{\(\Delta T_{\min}\)}{порог для \texttt{dwell\_time}}
+\whereitem{\(n_{\max}\)}{максимальное число повторных попыток}
+\whereitem{\(t_{\text{base}}\)}{базовый интервал между повторами}
+\whereitemlast{\(t_{\max}\)}{максимальный интервал между повторами}
+
+\subsection{Принцип калибровки}
+
+Калибровка выполняется поэтапно:
+\begin{enumerate}
+    \item подобрать \(\tau_{\text{conf}}, \tau_{\text{iou}}\) на валидационном подмножестве кадров;
+    \item зафиксировать параметры модуля сопровождения (\(\lambda, T_{\text{lost}}\)) по критерию минимизации \(ID\)-switches;
+    \item настроить пороги правил так, чтобы снизить ложные события без роста пропусков;
+    \item выбрать параметры повторной доставки и задержки между повторами по компромиссу «надежность--задержка».
+\end{enumerate}
+
+Важный практический момент: оптимум по одной метрике (например, mAP детектора) не гарантирует оптимум по системной метрике \(\operatorname{p95}_{\text{obj}\to\text{event}}\). Поэтому окончательная калибровка должна проводиться в целевом видеоконтуре, а текущая работа фиксирует модель такой калибровки и границы стендовой проверки.
+
+\subsection{Ограничения валидности модели}
+
+Текущая формализация имеет осознанные ограничения:
+\begin{itemize}
+    \item нет межкамерной реидентификации;
+    \item правиловой движок ориентирован на атомарные события и не покрывает сложные составные сценарии;
+    \item оценки производительности чувствительны к характеристикам видеопотока и стенда.
+\end{itemize}
+
+Несмотря на это, модель достаточна для целей текущего исследования и для проведения корректной экспериментальной оценки, предусмотренной главой 4.
+
+\section{Метрики качества подсистем и их агрегация}
+
+\subsection{Метрики детекции}
+
+Для детектора в offline-контуре фиксируются:
+\begin{itemize}
+    \item \(AP_{50}\), \(AP_{75}\);
+    \item \(mAP_{50:95}\);
+    \item precision/recall по целевым классам.
+\end{itemize}
+
+При переносе в online-контур детектор оценивается не только по точности, но и по \(\Delta t_{\text{infer}}\), поскольку именно эта величина напрямую влияет на \(\operatorname{p95}_{\text{obj}\to\text{event}}\).
+
+\subsection{Метрики сопровождения}
+
+Для модуля сопровождения используются метрики:
+\begin{itemize}
+    \item \(MOTA\) - агрегированная точность сопровождения;
+    \item \(MOTP\) - точность локализации в сопровождении;
+    \item \(IDF1\) - качество сохранения идентичности;
+    \item \(ID\text{-}switches\) - число переключений ID.
+\end{itemize}
+
+Для задач охранного мониторинга ключевыми являются \(IDF1\) и \(ID\text{-}switches\), поскольку они определяют корректность событий, зависящих от длительности и направления движения объекта.
+
+\subsection{Метрики событийного уровня}
+
+Событийный модуль оценивается как задача бинарной классификации фактов:
+\begin{equation}
+\text{precision}_e = \frac{TP_e}{TP_e + FP_e}, \quad
+\text{recall}_e = \frac{TP_e}{TP_e + FN_e}.
+\end{equation}
+Дополнительно фиксируется доля подавленных дубликатов:
+\begin{equation}
+R_{\text{dedup}} = \frac{N_{\text{suppressed}}}{N_{\text{raw\_triggers}}}.
+\end{equation}
+Слишком низкое \(R_{\text{dedup}}\) может означать недоиспользование механизма дедупликации, слишком высокое - риск агрессивного подавления валидных событий.
+
+\subsection{Метрики надежности интеграции}
+
+Для контура доставки:
+\begin{equation}
+R_{\text{publish}} = \frac{N_{\text{published}}}{N_{\text{outbox}}}, \quad
+R_{\text{webhook}} = \frac{N_{\text{webhook\_ok}}}{N_{\text{published}}}.
+\end{equation}
+Также учитываются:
+\begin{itemize}
+    \item среднее число повторных попыток на событие;
+    \item доля сообщений, переведенных в очередь недоставленных сообщений;
+    \item время обработки накопленной очереди исходящих сообщений после восстановления брокера.
+\end{itemize}
+
+\subsection{Сквозная агрегированная оценка}
+
+Для интегральной оценки качества платформы вводится вектор
+\begin{equation}
+\mathbf{Q} = \left[
+\operatorname{p95}_{\text{obj}\to\text{event}},
+IDF1,
+\text{precision}_e,
+R_{\text{webhook}},
+R_{\text{drop}}
+\right].
+\end{equation}
+Решение считается приемлемым, если каждая компонента \(\mathbf{Q}\) удовлетворяет целевому порогу. Такой подход предпочтительнее единой скалярной функции, поскольку позволяет локализовать конкретный деградирующий слой конвейера.
+
+\section{Формализация ограничений и критериев приемки}
+
+\subsection{Ограничения по времени}
+
+Пороговые значения в работе задаются как инженерные критерии стендовой приемки: они не подменяют сертификационные процедуры, но согласуются с логикой измерения производительности интеллектуальной видеоаналитики в системах видеонаблюдения~\cite{iec_62676_6_2026}. Для CPU-профиля:
+\begin{equation}
+\operatorname{p95}_{\text{obj}\to\text{event}} \le 2.0\ \text{с}.
+\end{equation}
+Для расширенных многокамерных профилей пороги должны устанавливаться только после отдельной серии измерений на целевом оборудовании. Нарушение выбранных ограничений требует пересмотра параметров \(\Theta\) или масштабирования вычислительных ресурсов.
+
+\subsection{Ограничения по надежности}
+
+Требование надежности формализуется как:
+\begin{equation}
+N_{\text{lost}} = 0 \quad \text{при кратковременной недоступности RabbitMQ},
+\end{equation}
+а также
+\begin{equation}
+\frac{N_{\text{dlq}}}{N_{\text{generated}}} \le \epsilon_{\text{dlq}},
+\end{equation}
+\where
+\whereitemlast{\(\epsilon_{\text{dlq}}\)}{допустимый порог доли сообщений, переведенных в очередь недоставленных сообщений}
+
+\subsection{Ограничения по безопасности}
+
+Для защищенных операций API должна выполняться аксиома разграничения доступа, согласованная с принципами минимально необходимых привилегий, управления доступом и подотчетности действий~\cite{nist_sp800_53r5}:
+\begin{equation}
+\forall u \in \mathcal{U},\ \forall a \in \mathcal{A}_{\text{protected}}:
+\quad permit(u,a) \Leftrightarrow role(u) \in \mathcal{R}(a).
+\end{equation}
+Нарушение данной аксиомы трактуется как критическая дефектность контура безопасности и блокирует приемку релиза.
+
+\subsection{Критерий архитектурной приемки}
+
+Финальный критерий приемки задается множеством ограничений:
+\begin{equation}
+\mathcal{C} = \{C_{\text{time}}, C_{\text{reliability}}, C_{\text{security}}, C_{\text{observability}}\}.
+\end{equation}
+Платформа считается прошедшей архитектурную приемку, если:
+\begin{equation}
+\bigwedge_{c \in \mathcal{C}} c = 1.
+\end{equation}
+\where
+\whereitem{\(C_{\text{time}}\)}{соблюдены ограничения по задержке}
+\whereitem{\(C_{\text{reliability}}\)}{подтверждена корректность таблицы исходящих сообщений, повторов и очереди недоставленных сообщений}
+\whereitem{\(C_{\text{security}}\)}{RBAC-ограничения подтверждены тестами}
+\whereitemlast{\(C_{\text{observability}}\)}{все обязательные метрики доступны}
+
+Данный критерий используется как формальная основа интерпретации результатов в главе 4.
+
+\section*{Выводы по главе 2}
+\addcontentsline{toc}{section}{Выводы по главе 2}
+
+Во второй главе сформированы теоретические предпосылки, модели и методология построения платформы видеоаналитики реального времени. Основные результаты главы могут быть резюмированы тремя положениями.
+
+\textit{Во-первых}, обоснован выбор архитектурного шаблона и технологического стека. Микросервисная архитектура с разделением на контур управления и контур обработки данных согласована с архитектурными факторами, сформулированными в главе 1 (изоляция отказов, локальность изменений, наблюдаемость). Для каждого слоя стека (детектор, модуль сопровождения, веб-фреймворк, СУБД, брокер сообщений, видеозахват, наблюдаемость, оркестрация) выполнено сравнение альтернатив и зафиксирован обоснованный выбор: YOLO~\cite{redmon2016yolo,redmon2018yolov3,ultralytics_docs} и DeepSORT~\cite{wojke2017deepsort,kalman1960,kuhn1955hungarian} для алгоритмического ядра, FastAPI~\cite{fastapi_docs} и SQLAlchemy~\cite{sqlalchemy_docs} для управляющего сервиса, PostgreSQL~\cite{postgresql_docs} и RabbitMQ~\cite{rabbitmq_docs,rabbitmq_confirms,rabbitmq_dlq} для надежной фиксации и асинхронной доставки событий, Prometheus и Grafana~\cite{prometheus_docs,grafana_docs} для наблюдаемости, Docker Compose~\cite{docker_docs} для воспроизводимого стенда. Сводный технологический стек отражен в таблице~\ref{tab:stack_summary}, его архитектурное представление - на рисунках~\ref{fig:ch2_pipeline} и~\ref{fig:ch2_c4_container}.
+
+\textit{Во-вторых}, сформирована математическая модель сквозного конвейера платформы: от захвата видеопотока и детекции до сопровождения, правиловой генерации событий и надежной доставки через транзакционную таблицу исходящих сообщений~\cite{transactional_outbox,richardson_microservices}. Зафиксированы формальные определения для трех базовых правил (\texttt{zone\_enter}, \texttt{line\_cross}, \texttt{dwell\_time}), введена модель дедупликации на основе \texttt{dedup\_key}, описаны политика повторной доставки с экспоненциальной задержкой между попытками и маршрутизация в очередь недоставленных сообщений. Диаграмма последовательности доставки события (рисунок~\ref{fig:ch2_seq_outbox}) связывает этапы транзакционной фиксации и асинхронной публикации с конкретными участниками контура.
+
+\textit{В-третьих}, введены оценки вычислительной сложности этапов конвейера и формализован критерий архитектурной приемки $\bigwedge_{c \in \mathcal{C}} c = 1$, объединяющий ограничения по времени, надежности, безопасности и наблюдаемости. Зафиксированы наборы метрик подсистем (детекции, сопровождения, событийного уровня, надежности интеграции) и сводный вектор интегральной оценки $\mathbf{Q}$. Полученные формализации используются как методическая основа инженерной реализации платформы (глава~\ref{ch:implementation}) и как набор критериев для интерпретации результатов; в главе~\ref{ch:approbation} фактические измерения отделяются от целевых критериев расширенной приемки.

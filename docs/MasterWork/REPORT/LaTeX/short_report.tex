@@ -1,0 +1,22 @@
+\documentclass[14pt,a4paper,oneside]{extreport}
+
+\input{preamble}
+\input{metadata}
+\addbibresource{references.bib}
+
+\begin{document}
+
+\pagenumbering{arabic}
+\setcounter{page}{1}
+\hypersetup{pageanchor=false}
+\makeworktitle
+\hypersetup{pageanchor=true}
+
+\tableofcontents
+\clearpage
+
+\input{short_report_content}
+
+\printbibliography[title={СПИСОК ИСПОЛЬЗОВАННЫХ ИСТОЧНИКОВ},heading=bibintoc]
+
+\end{document}

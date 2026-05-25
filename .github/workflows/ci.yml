@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  api-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install API deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r services/api/requirements.txt
+      - name: Run API tests
+        run: |
+          pytest -q services/api/tests
+
+  analytics-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Analytics deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r services/analytics-worker/requirements.txt
+      - name: Run Analytics tests
+        run: |
+          pytest -q services/analytics-worker/tests
+
+  integration-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Integration deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r services/integration-worker/requirements.txt
+      - name: Run Integration tests
+        run: |
+          pytest -q services/integration-worker/tests
+
+  ui-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install UI deps
+        run: npm --prefix services/ui ci
+      - name: Run UI tests
+        run: npm --prefix services/ui run test -- --passWithNoTests
+      - name: Build UI
+        run: npm --prefix services/ui run build

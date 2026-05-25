@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://masterdegree/contracts/event.schema.v1.json",
+  "title": "VideoAnalyticsEventV1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "camera_id",
+    "track_id",
+    "object_class",
+    "confidence",
+    "occurred_at",
+    "rule_id",
+    "severity",
+    "dedup_key"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "zone_enter",
+        "line_cross",
+        "dwell_time"
+      ]
+    },
+    "camera_id": {
+      "type": "string"
+    },
+    "track_id": {
+      "type": "string"
+    },
+    "object_class": {
+      "type": "string"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "zone_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rule_id": {
+      "type": "string"
+    },
+    "severity": {
+      "type": "string"
+    },
+    "snapshot_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "dedup_key": {
+      "type": "string"
+    },
+    "attributes": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 2
+names: ['bird', 'drone']
+
+roboflow:
+  workspace: drone-detection-izrum
+  project: small-detection-jic7b
+  version: 21
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/drone-detection-izrum/small-detection-jic7b/dataset/21

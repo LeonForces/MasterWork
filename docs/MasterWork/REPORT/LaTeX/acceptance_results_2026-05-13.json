@@ -1,0 +1,59 @@
+{
+  "checks": {
+    "security": {
+      "viewer_create_camera_status": 403
+    },
+    "functional_e2e": {
+      "event_id": "9cdad6b1-7d4f-4499-a4e8-f5a9df3a36f3",
+      "outbox_status": {
+        "status": "published",
+        "retry_count": 1,
+        "published_at": "2026-05-13T07:49:34+00"
+      },
+      "delivery_counts": {
+        "success": 1,
+        "failed": 0
+      }
+    },
+    "rabbitmq_reliability": {
+      "event_id": "140b5e6a-9ac2-4563-8118-74233a2af04d",
+      "status_during_outage": {
+        "status": "retry",
+        "retry_count": 1,
+        "published_at": ""
+      },
+      "status_after_recovery": {
+        "status": "published",
+        "retry_count": 1,
+        "published_at": "2026-05-13T07:49:52+00"
+      },
+      "delivery_counts": {
+        "success": 1,
+        "failed": 0
+      }
+    },
+    "webhook_retry": {
+      "event_id": "fbbdaae0-9066-450c-a4a7-21fe64aa7caf",
+      "failed_attempts_before_recovery": 1,
+      "delivery_counts": {
+        "success": 1,
+        "failed": 2
+      },
+      "outbox_status": {
+        "status": "published",
+        "retry_count": 0,
+        "published_at": "2026-05-13T07:49:54+00"
+      }
+    }
+  },
+  "timings_sec": {
+    "functional_delivery": 4.605,
+    "rabbitmq_recovery": 8.863,
+    "webhook_recovery": 4.455
+  },
+  "camera_id": "e43cf078-8b23-4b28-838a-ef1ab8246e16",
+  "zone_id": "f5db99ce-240e-47c2-9b1a-e939d1191e08",
+  "rule_id": "83fbe7b9-17d5-4b90-bb7d-951f4951cd01",
+  "result": "passed",
+  "duration_sec": 30.732
+}

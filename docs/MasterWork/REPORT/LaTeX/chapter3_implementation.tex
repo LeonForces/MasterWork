@@ -1,0 +1,623 @@
+\chapter{ПРОГРАММНАЯ РЕАЛИЗАЦИЯ}
+\label{ch:implementation}
+
+\section{Архитектура сервисов и инфраструктурный контур}
+
+Реализация выполнена как набор изолированных микросервисов в одном репозитории:
+\begin{itemize}
+    \item \texttt{api} - управление конфигурацией, аутентификация/авторизация, просмотр событий, подтверждение инцидентов и экспорт подтверждающих артефактов;
+    \item \texttt{analytics-worker} - обработка видеопотоков и формирование событий;
+    \item \texttt{integration-worker} - публикация записей \texttt{event\_outbox} в RabbitMQ и доставка HTTP-получателям;
+    \item \texttt{ui} - операторский интерфейс;
+    \item инфраструктурные компоненты: \texttt{postgres}, \texttt{rabbitmq}, \texttt{prometheus}, \texttt{grafana}, \texttt{webhook-mock}.
+\end{itemize}
+
+Такое разбиение обеспечивает независимые жизненные циклы сервисов при сохранении простоты развёртывания на одном сервере через Docker Compose \cite{docker_docs,rabbitmq_docs,postgresql_docs}.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[font=\footnotesize]
+    \tikzstyle{svc}=[draw, rounded corners, minimum width=3.0cm, minimum height=1.05cm, align=center]
+    \node[svc] (cam) at (0,0) {RTSP-камеры};
+    \node[svc] (api) at (4.5,1.9) {api};
+    \node[svc] (analytics) at (4.5,0) {analytics-worker};
+    \node[svc] (db) at (4.5,-1.9) {PostgreSQL};
+    \node[svc] (ui) at (9.0,1.9) {ui};
+    \node[svc] (integration) at (9.0,0) {integration-worker};
+    \node[svc] (mq) at (9.0,-1.9) {RabbitMQ};
+    \node[svc] (ext) at (13.2,0) {Внешние системы};
+
+    \draw[->,thick] (cam) -- (analytics);
+    \draw[->,thick] (ui) -- (api);
+    \draw[->,thick] (api) -- (analytics);
+    \draw[->,thick] (api) -- (db);
+    \draw[->,thick] (analytics) -- node[left,font=\scriptsize]{events + event\_outbox} (db);
+    \draw[->,thick] (db) -- node[below,font=\scriptsize]{опрос event\_outbox} (integration);
+    \draw[->,thick,bend right=14] (integration) to node[right,font=\scriptsize]{публикация} (mq);
+    \draw[->,thick,bend right=14] (mq) to node[left,font=\scriptsize]{чтение} (integration);
+    \draw[->,thick] (integration) -- (ext);
+\end{tikzpicture}
+\caption{Схема взаимодействия сервисов платформы}
+\label{fig:service_architecture_scheme}
+\end{figure}
+
+\begin{table}[H]
+\caption{Сервисы и зоны ответственности}
+\label{tab:services_responsibility}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.26\textwidth}X}
+\toprule
+Сервис & Основная ответственность \\
+\midrule
+\texttt{api} & Операции CRUD для камер, зон и правил, журнал событий, маршруты подтверждения и артефактов, JWT/RBAC, маршруты состояния и метрик \\
+\texttt{analytics-worker} & Захват RTSP/MP4, детекция, сопровождение объектов, правиловой движок, запись \texttt{events + event\_outbox} \\
+\texttt{integration-worker} & Публикация в обменник \texttt{events.topic.v1}, доставка HTTP-получателям, повторы, очередь недоставленных сообщений, журнал попыток доставки \\
+\texttt{ui} & Вход пользователя, управление конфигурацией, просмотр событий, статусы системы \\
+\texttt{prometheus + grafana} & Сбор и визуализация эксплуатационных метрик \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Реализация программного интерфейса (API), JWT/RBAC и контрактов}
+
+\subsection{Технологический стек программного интерфейса}
+
+Сервис программного интерфейса (API) реализован на FastAPI с асинхронной моделью обработки запросов, ORM-слоем SQLAlchemy и миграциями Alembic \cite{fastapi_docs,sqlalchemy_docs,alembic_docs}. Для валидации входных данных используются Pydantic-схемы; для интеграционных контрактов зафиксирована OpenAPI-спецификация.
+
+\subsection{Модель пользователей и ролей}
+
+В БД реализованы сущности:
+\begin{itemize}
+    \item \texttt{users};
+    \item \texttt{roles};
+    \item \texttt{user\_roles};
+    \item \texttt{refresh\_tokens}.
+\end{itemize}
+
+Поддерживаются роли \texttt{admin}, \texttt{operator}, \texttt{viewer}. Ограничения на маршруты реализованы через слой зависимостей проверки прав; такая декомпозиция согласуется с практикой явного разграничения доступа и последующего аудита действий пользователей~\cite{nist_sp800_53r5}.
+
+\begin{table}[H]
+\caption{Ролевая матрица доступа}
+\label{tab:rbac_matrix}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{0.34\textwidth}ccc}
+\toprule
+Операция & admin & operator & viewer \\
+\midrule
+CRUD пользователей & + & - & - \\
+CRUD камер/зон/правил & + & + & - \\
+Просмотр событий и статусов & + & + & + \\
+Метрики и маршруты состояния & + & + & + \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Сценарий JWT-аутентификации}
+
+Контур безопасности использует пару токенов:
+\begin{itemize}
+    \item маркер доступа \texttt{access token} (TTL 15 минут);
+    \item маркер обновления \texttt{refresh token} (TTL 7 дней).
+\end{itemize}
+
+Маркеры обновления хранятся в БД в хэшированном виде и отзываются при завершении сеанса \texttt{logout}. Это позволяет централизованно управлять активными сессиями и реализовать принудительный отзыв.
+
+\subsection{Контракты REST API}
+
+Базовые маршруты:
+\begin{itemize}
+    \item авторизация: \texttt{/api/v1/auth/login}, \texttt{/api/v1/auth/refresh};
+    \item сессии: \texttt{/api/v1/auth/logout}, \texttt{/api/v1/auth/me};
+    \item конфигурация: \texttt{/api/v1/cameras}, \texttt{/api/v1/zones};
+    \item правила: \texttt{/api/v1/rules};
+    \item журнал событий: \texttt{/api/v1/events};
+    \item действия оператора по обработке событий: \nolinkurl{PATCH /api/v1/events/{event_id}/ack} и \nolinkurl{GET /api/v1/events/{event_id}/evidence};
+    \item эксплуатационные маршруты: \texttt{/health/live}, \texttt{/health/ready}, \texttt{/metrics}.
+\end{itemize}
+
+Для геометрии зон и линий используется JSONB-представление в формате, близком к GeoJSON, с серверной валидацией структуры и допустимости координат.
+
+\section{Реализация analytics-worker}
+
+\subsection{Захват и декодирование видеопотока}
+
+Контур захвата построен на PyAV/FFmpeg, что позволяет управлять буферизацией, переподключением и обработкой нестабильных RTSP-источников \cite{pyav_docs,ffmpeg_docs}. Для воспроизводимых тестов поддержан резервный режим работы с MP4-файлами.
+
+На каждую камеру выделяется независимый контекст обработки:
+\begin{itemize}
+    \item источник потока;
+    \item очередь последнего кадра размером 1;
+    \item состояние сопровождения;
+    \item локальные счетчики метрик.
+\end{itemize}
+
+\subsection{Детекция и сопровождение объектов}
+
+Детекция выполняется моделью семейства YOLO, имя весов задается параметром \texttt{DETECTOR\_MODEL}. В коде аналитического сервиса штатное значение параметра оставлено как легкий общий профиль \texttt{yolov8n.pt}; в экспериментальном БПЛА-профиле этот параметр переопределяется на дообученные веса \texttt{best.pt}, полученные из начального варианта \texttt{yolo26n.pt}. Сопровождение объектов реализовано через адаптер к \texttt{deep-sort-realtime} с камерной изоляцией состояния \cite{wojke2017deepsort,deepsort_realtime}.
+
+Горячий путь:
+\begin{equation}
+\begin{aligned}
+\text{захват} &\rightarrow \text{буфер кадра} \rightarrow \text{инференс} \\
+&\rightarrow \text{сопровождение} \rightarrow \text{правила}.
+\end{aligned}
+\end{equation}
+Это исключает бесконтрольный рост задержки даже при временных всплесках входного FPS.
+
+\subsection{Правиловой движок и генерация событий}
+
+Реализованы правила:
+\begin{itemize}
+    \item \texttt{zone\_enter};
+    \item \texttt{line\_cross};
+    \item \texttt{dwell\_time}.
+\end{itemize}
+
+Событие формируется только при выполнении предиката и прохождении дедупликации через \texttt{dedup\_key}. Далее в рамках одной транзакции записываются:
+\begin{enumerate}
+    \item запись в \texttt{events};
+    \item запись в \texttt{event\_outbox}.
+\end{enumerate}
+Таким образом устраняется гонка между «событие зафиксировано» и «событие опубликовано» \cite{transactional_outbox,richardson_microservices}.
+
+Фрагмент реализации правила входа в зону приведен в листинге~\ref{lst:rule_engine_zone_enter}. В коде явно сравниваются предыдущее и текущее положения центра bbox: событие создается только при переходе из состояния «вне зоны» в состояние «внутри зоны», а \texttt{dedup\_key} связывает камеру, правило и траекторию.
+
+\begin{lstlisting}[language=Python,caption={Фрагмент реализации правила \texttt{zone\_enter}},label={lst:rule_engine_zone_enter}]
+if rule_type == "zone_enter" and zone:
+    polygon = (zone.get("geometry") or {}).get("points", [])
+    inside_now = point_in_polygon(current_point, polygon)
+    inside_prev = (
+        point_in_polygon(st.last_point, polygon)
+        if st.last_point
+        else False
+    )
+    if inside_now and not inside_prev:
+        dedup = f"{self.camera_id}:{rule['rule_id']}:{track_id}"
+        event = self._build_event(
+            track=track,
+            rule=rule,
+            event_type="zone_enter",
+            dedup_key=dedup,
+            zone_id=zone_id,
+        )
+        generated.append(event)
+\end{lstlisting}
+
+\section{Реализация \texttt{integration-worker}: RabbitMQ, повторы и очередь недоставленных сообщений}
+
+\subsection{Топология RabbitMQ}
+
+Интеграционный контур использует:
+\begin{itemize}
+    \item устойчивый обменник \texttt{events.topic.v1} (тип \texttt{topic});
+    \item устойчивую очередь \texttt{integration.webhook.v1};
+    \item ключ маршрутизации формата \texttt{event.<event\_type>.v1};
+    \item \texttt{integration.webhook.v1.dlq} - очередь недоставленных сообщений.
+\end{itemize}
+
+Публикация из таблицы исходящих сообщений в брокер выполняется с подтверждениями публикации RabbitMQ; потребитель подтверждает сообщение (\texttt{ack}) только после успешного вызова HTTP-получателя \cite{rabbitmq_confirms,rabbitmq_dlq}.
+
+\subsection{Публикатор исходящих сообщений}
+
+Публикатор выбирает записи таблицы исходящих сообщений в статусах \texttt{pending/retry}, сериализует полезную нагрузку и публикует ее в обменник. После получения подтверждения статус переводится в \texttt{published}; при ошибке увеличивается \texttt{retry\_count} и пересчитывается \texttt{next\_retry\_at}.
+
+\begin{lstlisting}[language=Python,caption={Цикл публикации исходящих сообщений с контролируемыми повторами},label={lst:outbox_publisher}]
+for row in candidates:
+    outbox_id = row["outbox_id"]
+    retry_count = int(row.get("retry_count", 0))
+    payload = row["payload"]
+    event_type = payload.get("event_type", "unknown")
+    try:
+        broker.publish_event(payload, event_type)
+        mark_published(outbox_id)
+        PUBLISH_SUCCESS.inc()
+    except Exception:
+        retry_count += 1
+        terminal = retry_count >= settings.max_retry
+        mark_retry(outbox_id, retry_count, terminal=terminal)
+        PUBLISH_ERROR.inc()
+        if not terminal:
+            OUTBOX_RETRIES.inc()
+        reconnect_required = True
+        break
+\end{lstlisting}
+
+\subsection{Доставка HTTP-получателю и журнал попыток}
+
+Потребитель выполняет POST-запрос целевому HTTP-получателю (в тестовом контуре - \texttt{webhook-mock}) и записывает результат в \texttt{delivery\_attempts}. Стратегия повторов использует экспоненциальное увеличение задержки до 10 попыток, затем фиксируется конечная ошибка доставки и сообщение маршрутизируется в очередь недоставленных сообщений.
+
+Для внешних систем поддержана идемпотентность на уровне \texttt{dedup\_key}: повторная доставка одного факта не должна приводить к дублирующим побочным эффектам.
+
+Фрагмент доставки HTTP-получателю приведен в листинге~\ref{lst:webhook_retry_dlq}. Потребитель подтверждает сообщение брокеру только после успешной доставки либо после контролируемого перевода в очередь недоставленных сообщений, что исключает бесконечный цикл повторов без фиксации причины отказа.
+
+\begin{lstlisting}[language=Python,caption={Доставка HTTP-получателю с повтором и переходом в очередь недоставленных сообщений},label={lst:webhook_retry_dlq}]
+success, error_text = _deliver_webhook(payload)
+if success:
+    WEBHOOK_SUCCESS.inc()
+    log_delivery_attempt(event_id, consumer_name, "success", None)
+    channel.basic_ack(delivery_tag=method.delivery_tag)
+    return
+
+WEBHOOK_FAILURE.inc()
+log_delivery_attempt(event_id, consumer_name, "failed", error_text)
+next_attempt = attempt + 1
+if next_attempt >= settings.max_retry:
+    broker.publish_dlq(payload, reason=error_text or "max_retries")
+    DLQ_PUBLISH.inc()
+    channel.basic_ack(delivery_tag=method.delivery_tag)
+    return
+
+time.sleep(min(30, 2**next_attempt))
+broker.publish_event(
+    payload,
+    payload.get("event_type", "unknown"),
+    headers={"delivery_attempt": next_attempt},
+)
+OUTBOX_RETRIES.inc()
+channel.basic_ack(delivery_tag=method.delivery_tag)
+\end{lstlisting}
+
+\section{Мониторинг, метрики и эксплуатационная наблюдаемость}
+
+Наблюдаемость реализована как обязательная часть решения через Prometheus и Grafana \cite{prometheus_docs,grafana_docs}.
+
+Сервисы публикуют:
+\begin{itemize}
+    \item \texttt{/health/live};
+    \item \texttt{/health/ready};
+    \item \texttt{/metrics}.
+\end{itemize}
+
+Ключевые метрики:
+\begin{itemize}
+    \item входной и обработанный FPS по камерам;
+    \item количество отброшенных кадров;
+    \item задержка инференса;
+    \item задержка \texttt{object->event};
+    \item число reconnect к RTSP;
+    \item ошибки и повторы публикации исходящих сообщений;
+    \item неуспешные доставки и счетчик сообщений в очереди недоставленных сообщений.
+\end{itemize}
+
+Фиксация этих показателей позволяет в главе~\ref{ch:approbation} перейти от декларативной оценки к измеримой.
+
+\section{Развертывание и воспроизводимость}
+
+\subsection{Docker Compose профиль}
+
+Для единого стенда используется \texttt{docker-compose.yml}, включающий полный набор сервисов текущего контура. Развертывание воспроизводимо как локально, так и на выделенном Linux-сервере.
+
+\subsection{Makefile и автоматизация}
+
+На уровне репозитория предусмотрены команды:
+\begin{itemize}
+    \item управление стеком (\texttt{up}, \texttt{down}, \texttt{logs});
+    \item тестовые цели (\texttt{test}, \texttt{ui-test}, \texttt{smoke-e2e});
+    \item цели для отчета (\texttt{report-pdf}, \texttt{report-clean}, \texttt{report-check}).
+\end{itemize}
+
+Для LaTeX-сборки по умолчанию используется контейнерный конвейер TeX Live \texttt{xelatex -> biber -> xelatex -> xelatex}. Это устраняет зависимость от локальной установки TeX на рабочей машине.
+
+\section{Реализация операторского интерфейса (UI)}
+
+\subsection{Структура клиентского приложения}
+
+Пользовательский интерфейс реализован как одностраничное приложение на React + Vite + TypeScript. Приложение разделено на следующие функциональные модули:
+\begin{itemize}
+    \item модуль аутентификации и управления сессией;
+    \item модуль конфигурации камер;
+    \item модуль управления зонами и правилами;
+    \item журнал событий с фильтрацией, подтверждением и экспортом подтверждающих артефактов;
+    \item страница статуса системы и метрик.
+\end{itemize}
+
+Маршруты интерфейса соответствуют принятым контрактам:
+\begin{equation}
+\begin{aligned}
+&\texttt{/login},\ \texttt{/dashboard},\ \texttt{/cameras},\ \texttt{/zones},\\
+&\texttt{/rules},\ \texttt{/events},\ \texttt{/demo},\ \texttt{/status}.
+\end{aligned}
+\end{equation}
+\subsection{Сценарий JWT-аутентификации на стороне интерфейса}
+
+При успешном входе пользовательский интерфейс получает маркеры доступа и обновления и выполняет:
+\begin{enumerate}
+    \item хранение маркера доступа в памяти приложения;
+    \item хранение маркера обновления в защищенном хранилище сессии (в соответствии с политикой проекта);
+    \item автоматическую ротацию маркера доступа при получении ответа 401.
+\end{enumerate}
+
+Завершение сеанса инициирует отзыв маркера обновления на стороне API и локальную очистку сессионных данных.
+
+\subsection{Ролевая видимость действий}
+
+В интерфейсе применяется не только серверное ограничение, но и визуальная фильтрация действий:
+\begin{itemize}
+    \item \texttt{viewer}: доступ к чтению событий, статусов и метрик;
+    \item \texttt{operator}: доступ к изменению камер/зон/правил;
+    \item \texttt{admin}: доступ к управлению пользователями и ролями.
+\end{itemize}
+
+Это уменьшает вероятность операторских ошибок и делает интерфейс согласованным с RBAC-политикой API.
+
+Контрольная панель оператора агрегирует состояние камер, событий и сервисов, что позволяет использовать UI как единое рабочее место дежурной смены (рисунок~\ref{fig:ui_dashboard}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{ui-dashboard.png}
+\caption{Экран сводной панели оператора}
+\label{fig:ui_dashboard}
+\end{figure}
+
+Экран демонстрации БПЛА объединяет видеопоток, активные траектории, события и состояние правила, что позволяет показать прохождение результата детекции в прикладной контур платформы (рисунок~\ref{fig:ui_demo}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{ui-demo.png}
+\caption{Экран демонстрационного сценария обнаружения БПЛА}
+\label{fig:ui_demo}
+\end{figure}
+
+Экран статуса системы используется для быстрой проверки состояния, готовности и доступности инфраструктурных компонентов перед запуском приемочных сценариев (рисунок~\ref{fig:ui_status}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{ui-status.png}
+\caption{Экран статуса сервисов и инфраструктуры}
+\label{fig:ui_status}
+\end{figure}
+
+Журнал событий предоставляет фильтрацию по камере, типу события, уровню критичности и временному интервалу; действия оператора подключены к серверным операциям изменения состояния: подтверждение инцидента выполняется через \texttt{PATCH /api/v1/events/\{event\_id\}/ack}, а экспорт доказательного JSON - через \texttt{GET /api/v1/events/\{event\_id\}/evidence}. Пример интерфейса приведен на рисунке~\ref{fig:ui_events}.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{ui-events.png}
+\caption{Экран журнала событий видеоаналитики}
+\label{fig:ui_events}
+\end{figure}
+
+\section{Структура данных и миграции}
+
+\subsection{Логическая схема БД}
+
+PostgreSQL содержит три группы сущностей:
+\begin{enumerate}
+    \item Идентификация и доступ: \texttt{users}, \texttt{roles}, \texttt{user\_roles}, \texttt{refresh\_tokens};
+    \item Конфигурация аналитики: \texttt{cameras}, \texttt{zones}, \texttt{rules};
+    \item Исполнение и интеграция: \texttt{tracks}, \texttt{events}, \texttt{event\_outbox}, \texttt{delivery\_attempts}.
+\end{enumerate}
+
+\begin{table}[H]
+\caption{Ключевые инварианты данных}
+\label{tab:data_invariants}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.34\textwidth}X@{}}
+\toprule
+Инвариант & Назначение \\
+\midrule
+\nolinkurl{events.event_id} уникален & Гарантия адресуемости факта события \\
+\nolinkurl{outbox.event_id} FK на \nolinkurl{events} & Связь записи исходящего сообщения с первичным фактом \\
+\nolinkurl{events.dedup_key} индексируется & Подавление дубликатов и быстрый поиск \\
+\nolinkurl{events.acknowledged_at} индексируется & Фиксация подтверждения инцидента оператором \\
+\nolinkurl{refresh_tokens} содержит только действующие сессии & Контролируемая ревокация токенов \\
+\nolinkurl{delivery_attempts} хранит каждую попытку доставки & Аудит надежности интеграционного контура \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Подход к миграциям}
+
+Эволюция схемы БД выполняется через Alembic-миграции:
+\begin{itemize}
+    \item каждая миграция атомарно описывает изменение схемы;
+    \item миграции версионируются и применяются в CI/стендах одинаково;
+    \item откат (rollback) на один шаг доступен для контролируемого возврата схемы.
+\end{itemize}
+
+Такой подход обеспечивает воспроизводимость экспериментального контура и снижает риск дрейфа схемы между окружениями.
+
+\subsection{Индексы и производительность запросов}
+
+Для обеспечения приемлемой задержки запросов в журнал событий используются индексы по:
+\begin{equation}
+\begin{aligned}
+&(\texttt{camera\_id}, \texttt{occurred\_at}),\\
+&\texttt{event\_type},\quad \texttt{severity},\quad \texttt{dedup\_key}.
+\end{aligned}
+\end{equation}
+Для контура исходящих сообщений предусмотрен индекс по статусу и времени следующей попытки:
+\begin{equation}
+(\texttt{status}, \texttt{next\_retry\_at}).
+\end{equation}
+Это уменьшает стоимость пакетных выборок публикатора при росте объема событий.
+
+\section{Тестирование, верификация и критерии качества}
+
+\subsection{Стратегия тестирования}
+
+Тестовый контур разбит на уровни:
+\begin{enumerate}
+    \item модульные тесты: отдельные функции валидации, дедупликации, расчетов повторных попыток;
+    \item интеграционные тесты: проверка взаимодействия сервиса с PostgreSQL/RabbitMQ;
+    \item проверочный интеграционный сценарий: вход пользователя, создание конфигурации и проход синтетически зафиксированного события до HTTP-получателя;
+    \item тесты пользовательского интерфейса: компонентные тесты и проверочный сценарий через Playwright.
+\end{enumerate}
+
+Тесты серверной части выполняются через \texttt{pytest}/\texttt{pytest-asyncio}, тесты интерфейса - через \texttt{vitest} и Playwright.
+
+\subsection{Обязательные проверки до стендового прогона}
+
+Перед запуском измерительных сценариев выполняется чек-лист:
+\begin{itemize}
+    \item миграции применены и схема БД актуальна;
+    \item проверки состояния и готовности всех сервисов возвращают \texttt{ready};
+    \item в RabbitMQ объявлены обменники, очереди и очередь недоставленных сообщений;
+    \item \texttt{webhook-mock} принимает тестовые POST-запросы;
+    \item панели Prometheus/Grafana доступны и записывают данные.
+\end{itemize}
+
+\subsection{Критерии приемки реализации}
+
+Реализация считается готовой к апробации, если одновременно выполнены условия:
+\begin{enumerate}
+    \item все обязательные маршруты API доступны и валидируют входные данные;
+    \item RBAC-политика соблюдается для ролей \texttt{admin/operator/viewer};
+    \item в интеграционном сценарии синтетически зафиксированное событие проходит путь до HTTP-получателя;
+    \item при отключении RabbitMQ события сохраняются в таблице исходящих сообщений и публикуются после восстановления;
+    \item метрики по FPS, задержке, повторным попыткам и очереди недоставленных сообщений доступны в Prometheus.
+\end{enumerate}
+
+\section{Эксплуатационные регламенты и ограничения текущего контура}
+
+\subsection{Операционный регламент}
+
+Для штатной эксплуатации на стенде принимаются следующие регламенты:
+\begin{itemize}
+    \item ежедневная проверка статусов камер и доли отброшенных кадров;
+    \item контроль накопления \texttt{event\_outbox} (пороговые предупреждения);
+    \item контроль динамики \texttt{delivery\_attempts} и очереди недоставленных сообщений;
+    \item ротация и отзыв пользовательских сессий при смене ролей;
+    \item архивирование артефактов экспериментов и логов.
+\end{itemize}
+
+\subsection{Известные ограничения}
+
+Текущая реализация осознанно ограничена:
+\begin{itemize}
+    \item базовый охранный профиль ориентирован на классы \texttt{person} и \texttt{vehicle}; БПЛА вынесены в отдельный демонстрационный профиль с классами \texttt{bird} и \texttt{drone};
+    \item отсутствие межкамерной повторной идентификации (ReID);
+    \item односерверный профиль без кластерной высокой доступности (HA);
+    \item ограниченный набор правил: \texttt{zone\_enter}, \texttt{line\_cross}, \texttt{dwell\_time}.
+\end{itemize}
+
+Эти ограничения не препятствуют достижению целей текущего исследования, но фиксируются как область дальнейшего развития.
+
+\section{Сценарии межсервисного взаимодействия}
+
+\subsection{Сценарий «создание конфигурации оператором»}
+
+Последовательность взаимодействий:
+\begin{enumerate}
+    \item Оператор аутентифицируется в пользовательском интерфейсе.
+    \item Пользовательский интерфейс получает JWT и запрашивает профиль ролей через \texttt{/api/v1/auth/me}.
+    \item Оператор создает/изменяет камеру, зоны и правила.
+    \item API валидирует полезную нагрузку запроса и записывает данные в PostgreSQL.
+    \item \texttt{analytics-worker} на очередном цикле конфигурационного опроса подхватывает изменения.
+\end{enumerate}
+
+В результате измененная конфигурация начинает применяться без перекомпиляции и без остановки всего контура.
+
+\subsection{Сценарий «событие от кадра до HTTP-получателя»}
+
+Сквозной путь:
+\begin{enumerate}
+    \item Камера передает кадр в \texttt{analytics-worker}.
+    \item Детектор и модуль сопровождения формируют обновленное состояние объекта.
+    \item Правиловой движок создает событие и запись в таблице исходящих сообщений в одной транзакции.
+    \item \texttt{integration-worker} публикует событие в RabbitMQ.
+    \item Потребитель очереди вызывает внешний HTTP-получатель.
+    \item Статус попытки фиксируется в \texttt{delivery\_attempts}.
+\end{enumerate}
+
+Эта последовательность является целевой для расширенных сквозных проверок и измерения \(\operatorname{p95}_{\text{obj}\to\text{event}}\); в текущей апробации количественно проверяется интеграционный участок от записи события до доставки.
+
+\subsection{Сценарий «временная недоступность брокера»}
+
+\begin{enumerate}
+    \item RabbitMQ недоступен, публикация в обменник не подтверждается.
+    \item Записи таблицы исходящих сообщений остаются в статусах \texttt{pending/retry}.
+    \item \texttt{analytics-worker} продолжает формировать события и записывать их в БД.
+    \item После восстановления брокера публикатор постепенно обрабатывает накопленную очередь.
+\end{enumerate}
+
+Требуемый результат - отсутствие потери событий и ограниченное время догона очереди.
+
+\section{Конфигурационное управление и версионирование контрактов}
+
+\subsection{Версионирование API}
+
+Все публичные маршруты вынесены под префикс \texttt{/api/v1}. Изменения, нарушающие обратную совместимость, должны оформляться как новая старшая версия (\texttt{/api/v2}) с параллельной поддержкой миграционного периода.
+
+\subsection{Версионирование сообщения события}
+
+Полезная нагрузка сообщения RabbitMQ содержит поле \texttt{schema\_version}. Используется \texttt{schema\_version = 1}. При добавлении полей:
+\begin{itemize}
+    \item обратно совместимые изменения допустимы в той же версии;
+    \item несовместимые изменения требуют перехода на новую версию контракта и новый ключ маршрутизации.
+\end{itemize}
+
+Такой подход снижает риск разрыва интеграций при развитии платформы.
+
+\subsection{Управление конфигурацией правил}
+
+Конфигурация зон/правил хранится в БД и версионируется на уровне записей:
+\begin{itemize}
+    \item фиксируется время обновления;
+    \item фиксируется пользователь-инициатор;
+    \item поддерживается \texttt{enabled}-флаг для безопасного включения/выключения правила.
+\end{itemize}
+
+Это обеспечивает управляемую эволюцию логики событий без изменения кода сервисов.
+
+\section{Инженерные аспекты производительности}
+
+\subsection{Горизонт и вертикаль масштабирования}
+
+На текущем этапе основным механизмом остается вертикальное масштабирование: CPU, RAM и ускоритель инференса. При этом архитектура допускает ограниченное горизонтальное разнесение:
+\begin{itemize}
+    \item вынесение \texttt{analytics-worker} на выделенный узел;
+    \item вынесение \texttt{integration-worker} на отдельный узел;
+    \item сохранение общих контрактов API и сообщений.
+\end{itemize}
+
+\subsection{Параметры настройки фоновых обработчиков}
+
+К критическим параметрам тюнинга относятся:
+\begin{itemize}
+    \item размер пакета публикатора исходящих сообщений;
+    \item интервал опроса таблицы исходящих сообщений;
+    \item ограничение числа параллельных вызовов HTTP-получателей;
+    \item целевой FPS на камеру;
+    \item профиль входного разрешения детектора.
+\end{itemize}
+
+Эти параметры калибруются экспериментально и фиксируются для каждого профиля стенда.
+
+\subsection{Управление обратным давлением}
+
+Обратное давление реализуется на трех уровнях:
+\begin{enumerate}
+    \item буфер последнего актуального кадра в аналитическом контуре;
+    \item ограничение размера пакета публикатора исходящих сообщений;
+    \item ограничение числа одновременных HTTP-доставок в \texttt{integration-worker}.
+\end{enumerate}
+
+Комбинация указанных механизмов предотвращает каскадное накопление очередей при кратковременных всплесках нагрузки.
+
+\section{Операционная диагностика и сопровождение}
+
+\subsection{План диагностики при деградации}
+
+При ухудшении p95-задержки рекомендуется последовательная диагностика:
+\begin{enumerate}
+    \item проверить рост числа отброшенных кадров и входной FPS;
+    \item проверить задержку детекции и загрузку CPU/ускорителя;
+    \item проверить размер накопленной очереди исходящих сообщений и скорость публикации;
+    \item проверить время ответа HTTP-получателя.
+\end{enumerate}
+
+Такой порядок позволяет быстро локализовать проблемный слой: компьютерное зрение, БД/брокер или внешнюю интеграцию.
+
+\subsection{Набор базовых предупреждений}
+
+Минимальный набор предупреждений:
+\begin{itemize}
+    \item \texttt{object->event p95} выше порога в течение заданного окна;
+    \item непрерывный рост \texttt{event\_outbox pending};
+    \item ненулевой рост очереди недоставленных сообщений в штатном режиме;
+    \item недоступность \texttt{/health/ready} любого критичного сервиса.
+\end{itemize}
+
+Срабатывание предупреждений сопровождается фиксацией инцидента и сбором диагностического пакета для последующего анализа.
+
+\section*{Выводы по главе 3}
+\addcontentsline{toc}{section}{Выводы по главе 3}
+
+В третьей главе представлена практическая реализация платформы как набора изолированных сервисов с единым инфраструктурным контуром. Показано, как математическая модель главы~\ref{ch:model_algorithm} трансформирована в конкретные программные компоненты: API с JWT/RBAC, аналитический фоновый обработчик с целевым конвейером реального времени и интеграционный фоновый обработчик с гарантиями надежной доставки через таблицу исходящих сообщений, повторные попытки и очередь недоставленных сообщений. Реализация задает целевой видеоконтур и отдельно проверяемый интеграционный контур, что соответствует границам апробации в главе~\ref{ch:approbation}.

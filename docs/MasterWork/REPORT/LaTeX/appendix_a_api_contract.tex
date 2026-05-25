@@ -1,0 +1,247 @@
+\chapter*{ПРИЛОЖЕНИЕ А. КОНТРАКТ СОБЫТИЯ И КОНЕЧНЫЕ ТОЧКИ API}
+\phantomsection
+\addcontentsline{toc}{chapter}{ПРИЛОЖЕНИЕ А. КОНТРАКТ СОБЫТИЯ И КОНЕЧНЫЕ ТОЧКИ API}
+
+\section*{А.1 Контракт события RabbitMQ}
+\phantomsection
+\addcontentsline{toc}{section}{А.1 Контракт события RabbitMQ}
+
+\textit{Версия схемы: \texttt{schema\_version=1}.}
+
+\begin{verbatim}
+{
+  "schema_version": 1,
+  "event_id": "uuid",
+  "event_type": "zone_enter",
+  "camera_id": "cam-01",
+  "track_id": "trk-183",
+  "object_class": "person",
+  "confidence": 0.91,
+  "occurred_at": "2026-03-07T10:15:32Z",
+  "zone_id": "zone-perimeter-a",
+  "rule_id": "rule-zone-enter-01",
+  "severity": "high",
+  "snapshot_path": "/data/artifacts/2026/03/07/event-123.jpg",
+  "dedup_key": "cam-01:rule-zone-enter-01:trk-183",
+  "acknowledged_at": null,
+  "acknowledged_by": null,
+  "attributes": {
+    "direction": "inbound"
+  }
+}
+\end{verbatim}
+
+\section*{А.2 Ключевые конечные точки REST API}
+\phantomsection
+\addcontentsline{toc}{section}{А.2 Ключевые конечные точки REST API}
+
+\begin{longtable}{@{}p{0.36\textwidth}p{0.58\textwidth}@{}}
+\nolinkurl{POST /api/v1/auth/login} & Получение пары access/refresh токенов \\
+\nolinkurl{POST /api/v1/auth/refresh} & Ротация токенов по refresh \\
+\nolinkurl{POST /api/v1/auth/logout} & Отзыв refresh-токена \\
+\nolinkurl{GET /api/v1/auth/me} & Профиль текущего пользователя и роли \\
+\nolinkurl{GET /api/v1/users} & Список пользователей (роль \texttt{admin}) \\
+\nolinkurl{POST /api/v1/users} & Создание пользователя и назначение ролей (\texttt{admin}) \\
+\nolinkurl{POST /api/v1/cameras} & Добавление камеры \\
+\nolinkurl{GET /api/v1/cameras} & Список камер и статусы \\
+\nolinkurl{PATCH /api/v1/cameras/{camera_id}} & Изменение параметров камеры \\
+\nolinkurl{POST /api/v1/zones} & Создание/обновление зоны контроля \\
+\nolinkurl{POST /api/v1/rules} & Создание/обновление правила \\
+\nolinkurl{GET /api/v1/events} & Просмотр журнала событий с фильтрами \\
+\nolinkurl{PATCH /api/v1/events/{event_id}/ack} & Подтверждение события оператором \\
+\nolinkurl{GET /api/v1/events/{event_id}/evidence} & Экспорт доказательного JSON по событию \\
+\nolinkurl{GET /health/live} & Проверка живости процесса \\
+\nolinkurl{GET /health/ready} & Проверка готовности зависимостей \\
+\nolinkurl{GET /metrics} & Экспорт метрик Prometheus \\
+\end{longtable}
+
+\section*{А.3 Пример \texttt{dedup\_key}}
+\phantomsection
+\addcontentsline{toc}{section}{А.3 Пример \texttt{dedup\_key}}
+
+Базовый формат ключа дедупликации:
+\begin{equation}
+\texttt{dedup\_key} = \texttt{camera\_id:rule\_id:track\_id}.
+\end{equation}
+Для правил длительного нахождения допускается включение временного бакета:
+\begin{equation}
+\texttt{camera\_id:rule\_id:track\_id:time\_bucket}.
+\end{equation}
+\section*{А.4 Примеры запросов и ответов API}
+\phantomsection
+\addcontentsline{toc}{section}{А.4 Примеры запросов и ответов API}
+
+Логин
+\begin{verbatim}
+POST /api/v1/auth/login
+{
+  "username": "operator1",
+  "password": "********"
+}
+\end{verbatim}
+
+\begin{verbatim}
+200 OK
+{
+  "access_token": "eyJhbGciOi...",
+  "refresh_token": "eyJhbGciOi...",
+  "token_type": "bearer",
+  "expires_in": 900
+}
+\end{verbatim}
+
+Создание камеры
+\begin{verbatim}
+POST /api/v1/cameras
+Authorization: Bearer <access_token>
+{
+  "camera_id": "cam-01",
+  "name": "North Gate",
+  "source_uri": "rtsp://10.0.0.10/stream1",
+  "fps_target": 10,
+  "enabled": true
+}
+\end{verbatim}
+
+\begin{verbatim}
+201 Created
+{
+  "camera_id": "cam-01",
+  "status": "active",
+  "created_at": "2026-05-13T07:49:00Z"
+}
+\end{verbatim}
+
+Создание зоны
+\begin{verbatim}
+POST /api/v1/zones
+Authorization: Bearer <access_token>
+{
+  "zone_id": "zone-perimeter-a",
+  "camera_id": "cam-01",
+  "zone_type": "polygon",
+  "geometry": {
+    "type": "Polygon",
+    "coordinates": [[
+      [120,80],
+      [620,80],
+      [620,430],
+      [120,430],
+      [120,80]
+    ]]
+  },
+  "name": "Perimeter A"
+}
+\end{verbatim}
+
+Создание правила
+\begin{verbatim}
+POST /api/v1/rules
+Authorization: Bearer <access_token>
+{
+  "rule_id": "rule-zone-enter-01",
+  "camera_id": "cam-01",
+  "rule_type": "zone_enter",
+  "severity": "high",
+  "enabled": true,
+  "params": {
+    "zone_id": "zone-perimeter-a",
+    "target_classes": ["person", "vehicle"]
+  }
+}
+\end{verbatim}
+
+Чтение событий
+\begin{verbatim}
+GET /api/v1/events?
+  camera_id=cam-01&event_type=zone_enter
+Authorization: Bearer <access_token>
+\end{verbatim}
+
+\begin{verbatim}
+200 OK
+[
+  {
+    "event_id": "efbe8d6f-...",
+    "event_type": "zone_enter",
+    "camera_id": "cam-01",
+    "track_id": "trk-183",
+    "occurred_at": "2026-03-07T10:15:32Z",
+    "severity": "high",
+    "acknowledged_at": null,
+    "acknowledged_by": null
+  }
+]
+\end{verbatim}
+
+Подтверждение события оператором
+\begin{verbatim}
+PATCH /api/v1/events/efbe8d6f-.../ack
+Authorization: Bearer <access_token>
+\end{verbatim}
+
+\begin{verbatim}
+200 OK
+{
+  "event_id": "efbe8d6f-...",
+  "acknowledged_at": "2026-05-12T09:10:00Z",
+  "acknowledged_by": "admin"
+}
+\end{verbatim}
+
+Экспорт evidence
+\begin{verbatim}
+GET /api/v1/events/efbe8d6f-.../evidence
+Authorization: Bearer <access_token>
+Content-Disposition: attachment;
+  filename="event-efbe8d6f-....json"
+\end{verbatim}
+
+\begin{verbatim}
+200 OK
+{
+  "event_id": "efbe8d6f-...",
+  "status": "acknowledged",
+  "snapshot_path": "/data/artifacts/2026/03/07/event-123.jpg",
+  "exported_at": "2026-05-12T09:10:15Z"
+}
+\end{verbatim}
+
+\section*{А.5 Минимальная JSON-схема события (фрагмент)}
+\phantomsection
+\addcontentsline{toc}{section}{А.5 Минимальная JSON-схема события (фрагмент)}
+
+\begin{verbatim}
+{
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "event_type",
+    "camera_id",
+    "track_id",
+    "occurred_at",
+    "severity",
+    "dedup_key"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "event_id": { "type": "string", "format": "uuid" },
+    "event_type": { "type": "string" },
+    "camera_id": { "type": "string" },
+    "track_id": { "type": "string" },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "severity": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "dedup_key": { "type": "string" },
+    "acknowledged_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "acknowledged_by": { "type": ["string", "null"] },
+    "attributes": { "type": "object" }
+  }
+}
+\end{verbatim}

@@ -1,0 +1,113 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${E2E_POSTGRES_HOST_PORT:-55433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE}
+    ports:
+      - "${E2E_RABBITMQ_HOST_PORT:-5673}:5672"
+      - "${E2E_RABBITMQ_MGMT_HOST_PORT:-15673}:15672"
+
+  api:
+    build:
+      context: ./services/api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      CORS_ORIGINS: ${E2E_CORS_ORIGINS:-http://localhost:14173,http://ui:4173}
+    depends_on:
+      - postgres
+    ports:
+      - "${E2E_API_HOST_PORT:-18000}:8000"
+    volumes:
+      - ./videos:/app/videos:ro
+
+  analytics-worker:
+    build:
+      context: ./services/analytics-worker
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - postgres
+      - rabbitmq
+    ports:
+      - "${E2E_ANALYTICS_METRICS_HOST_PORT:-19101}:9101"
+    volumes:
+      - ./videos:/app/videos:ro
+      - ./runs/detect/runs/train/small_detection/weights:/app/models:ro
+      - artifacts_data:/app/artifacts
+
+  integration-worker:
+    build:
+      context: ./services/integration-worker
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - postgres
+      - rabbitmq
+      - webhook-mock
+    ports:
+      - "${E2E_INTEGRATION_METRICS_HOST_PORT:-19102}:9102"
+
+  ui:
+    build:
+      context: ./services/ui
+      args:
+        VITE_API_BASE_URL: ${E2E_UI_API_BASE_URL:-http://localhost:18000}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${E2E_UI_HOST_PORT:-14173}:4173"
+
+  webhook-mock:
+    build:
+      context: ./services/webhook-mock
+    restart: unless-stopped
+    ports:
+      - "${E2E_WEBHOOK_HOST_PORT:-18090}:8090"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "${E2E_PROMETHEUS_HOST_PORT:-19090}:9090"
+    depends_on:
+      - api
+      - analytics-worker
+      - integration-worker
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    ports:
+      - "${E2E_GRAFANA_HOST_PORT:-13000}:3000"
+    depends_on:
+      - prometheus
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+
+volumes:
+  postgres_data:
+  grafana_data:
+  artifacts_data:

@@ -1,0 +1,120 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: video-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: video-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_ERLANG_COOKIE: ${RABBITMQ_ERLANG_COOKIE}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  api:
+    build:
+      context: ./services/api
+    container_name: video-api
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - postgres
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./videos:/app/videos:ro
+
+  analytics-worker:
+    build:
+      context: ./services/analytics-worker
+    container_name: video-analytics-worker
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - postgres
+      - rabbitmq
+    ports:
+      - "9101:9101"
+    volumes:
+      - ./videos:/app/videos:ro
+      - ./runs/detect/runs/train/small_detection/weights:/app/models:ro
+      - artifacts_data:/app/artifacts
+
+  integration-worker:
+    build:
+      context: ./services/integration-worker
+    container_name: video-integration-worker
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - postgres
+      - rabbitmq
+      - webhook-mock
+    ports:
+      - "9102:9102"
+
+  ui:
+    build:
+      context: ./services/ui
+      args:
+        VITE_API_BASE_URL: ${UI_API_BASE_URL}
+    container_name: video-ui
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "4173:4173"
+
+  webhook-mock:
+    build:
+      context: ./services/webhook-mock
+    container_name: video-webhook-mock
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: video-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+      - analytics-worker
+      - integration-worker
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: video-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+
+volumes:
+  postgres_data:
+  grafana_data:
+  artifacts_data:
