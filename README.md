@@ -1,81 +1,132 @@
-# Real-Time Video Analytics Platform (E2E MVP)
+# Платформа видеоаналитики реального времени
 
-Monorepo with isolated services:
+Репозиторий содержит E2E MVP платформы видеоаналитики для магистерской ВКР. Система принимает видеопоток или демо-видео, выполняет обнаружение объектов, ведет треки, применяет правила событийного анализа и доставляет события через API, RabbitMQ и webhook-интеграцию.
 
-- `services/api` - FastAPI control plane (`JWT + RBAC`, config CRUD, events, health/metrics)
-- `services/analytics-worker` - capture/inference/tracking/rule engine + `events/event_outbox`
-- `services/integration-worker` - outbox publisher to RabbitMQ + webhook delivery with retry/DLQ
-- `services/ui` - React SPA (`login`, `dashboard`, `cameras`, `zones`, `rules`, `events`, `status`)
-- `services/webhook-mock` - test consumer for delivery validation
-- `infra/prometheus`, `infra/grafana` - observability stack
-- `contracts` - shared schemas/contracts
+Основной демонстрационный сценарий - обнаружение БПЛА на подготовленном видео `videos/V_DRONE_009.mp4` с использованием обученной модели `runs/detect/runs/train/small_detection/weights/best.pt`.
 
-## Quick Start
+## Что реализовано
 
-1. Initialize env and dependencies:
+- Управление пользователями, ролями и доступом через `JWT + RBAC`.
+- CRUD для камер, зон контроля и правил событийного анализа.
+- Обработка видео в `analytics-worker`: захват кадров, inference, tracking, rule engine.
+- Хранение событий и outbox-записей в `PostgreSQL`.
+- Публикация событий в `RabbitMQ` и доставка во внешний webhook с retry/DLQ.
+- Веб-интерфейс оператора на `React`: dashboard, demo, cameras, zones, rules, events, status.
+- Наблюдаемость через `/metrics`, `Prometheus` и `Grafana`.
+- Контракты API и событий в каталоге `contracts`.
+- Автоматизированные smoke- и acceptance-проверки для функциональности, RBAC и надежности доставки.
+
+## Состав проекта
+
+| Путь | Назначение |
+|---|---|
+| `services/api` | FastAPI control plane: авторизация, конфигурация, события, health/metrics |
+| `services/analytics-worker` | Data plane: обработка видео, детекция, трекинг, генерация событий |
+| `services/integration-worker` | Публикация outbox-событий в RabbitMQ и доставка webhook-уведомлений |
+| `services/ui` | React SPA для оператора и проверяющего |
+| `services/webhook-mock` | Тестовый consumer для проверки доставки событий |
+| `contracts` | `event.schema.v1.json` и snapshot OpenAPI-контракта |
+| `infra/prometheus`, `infra/grafana` | Конфигурация мониторинга |
+| `scripts` | Smoke, acceptance и вспомогательные сценарии |
+| `docs/MasterWork` | Архитектура, отчет, презентация и финальный пакет сдачи |
+
+## Требования
+
+Для локального запуска нужны:
+
+- Docker и Docker Compose (`docker compose` или `docker-compose`);
+- `make`;
+- Python 3 для локальных smoke/acceptance-скриптов;
+- Node.js/npm для локальной установки и проверки UI через `make bootstrap` и `make verify`.
+
+Перед первым запуском убедитесь, что стандартные порты свободны. Если заняты `8000` или `4173`, используйте изолированный E2E-профиль из раздела ниже.
+
+## Быстрый старт
+
+1. Подготовить `.env` и локальные зависимости UI:
 
 ```bash
 make bootstrap
 ```
 
-If you already had an older `.env`, ensure `JWT_SECRET_KEY` is at least 32 chars.
+Если `.env` уже существовал раньше, проверьте, что `JWT_SECRET_KEY` содержит не менее 32 символов.
 
-2. Start stack:
+2. Запустить стек в фоне:
 
 ```bash
 make up-d
 ```
 
-3. Open:
+3. Применить миграции:
 
-- API docs: `http://localhost:8000/docs`
+```bash
+make migrate-up
+```
+
+4. Открыть интерфейсы:
+
 - UI: `http://localhost:4173`
+- API docs: `http://localhost:8000/docs`
 - RabbitMQ Management: `http://localhost:15672`
 - Prometheus: `http://localhost:9090`
 - Grafana: `http://localhost:3000`
 - Webhook mock: `http://localhost:8090`
 
-## Drone Detection Demo
+5. Войти в UI:
 
-The stack is configured to use the trained drone detector and the uploaded demo video:
+- username: `admin`
+- password: `admin12345`
 
-- model: `runs/detect/runs/train/small_detection/weights/best.pt`
-- video: `videos/V_DRONE_009.mp4`
-- analytics container paths: `/app/models/best.pt` and `/app/videos/V_DRONE_009.mp4`
+Значения задаются в `.env` через `DEFAULT_ADMIN_USERNAME` и `DEFAULT_ADMIN_PASSWORD`.
 
-After `make up-d`, open the UI and go to `Drone demo`. The API seeds an active demo camera automatically when `DEMO_DRONE_ENABLED=true`, and the analytics worker writes current drone tracks to `/api/v1/tracks` plus demo rule events to `/api/v1/events`. With `DEMO_DRONE_EXCLUSIVE=true`, old non-demo cameras are marked inactive so the worker focuses on the uploaded video.
+## Демо обнаружения БПЛА
 
-## Default Credentials
+Стек по умолчанию настроен на демо-сценарий:
 
-- Admin username: `admin`
-- Admin password: `admin12345`
+- модель: `runs/detect/runs/train/small_detection/weights/best.pt`
+- видео: `videos/V_DRONE_009.mp4`
+- путь модели внутри контейнера: `/app/models/best.pt`
+- путь видео внутри контейнера: `/app/videos/V_DRONE_009.mp4`
 
-Configured in `.env` (`DEFAULT_ADMIN_USERNAME`, `DEFAULT_ADMIN_PASSWORD`).
+После запуска откройте `http://localhost:4173/demo`. При `DEMO_DRONE_ENABLED=true` API автоматически создает активную demo camera, а `analytics-worker` пишет текущие треки в `/api/v1/tracks` и события правил в `/api/v1/events`.
 
-## Notes
+При `DEMO_DRONE_EXCLUSIVE=true` старые non-demo cameras переводятся в inactive, чтобы worker сфокусировался на загруженном видео.
 
-- Baseline is CPU-first; hardware acceleration is a future optimization path and is not part of the current accepted result.
-- Event contract baseline is in `contracts/event.schema.v1.json`.
+## Основные страницы UI
 
-## Validation Commands
+- `http://localhost:4173/dashboard` - обзор состояния платформы.
+- `http://localhost:4173/demo` - демонстрация обнаружения БПЛА и текущих треков.
+- `http://localhost:4173/events` - журнал событий, acknowledgement и evidence export.
+- `http://localhost:4173/cameras` - камеры и источники видео.
+- `http://localhost:4173/zones` - зоны контроля.
+- `http://localhost:4173/rules` - правила событийного анализа.
+- `http://localhost:4173/status` - health/status сервисов.
+
+## Проверка результата
+
+Базовая проверка кода и сборки:
 
 ```bash
 make verify
 ```
 
-API smoke flow (after stack is up):
+Smoke-сценарий против запущенного основного стека:
 
 ```bash
 make smoke-e2e
 ```
 
-Full acceptance flow (functional + security + reliability):
+Полный acceptance-сценарий против основного стека:
 
 ```bash
 make acceptance-e2e
 ```
 
-Isolated acceptance flow when default host ports are occupied:
+`acceptance-e2e` проверяет функциональный E2E-поток, ограничения `RBAC`, устойчивость outbox при остановке RabbitMQ и retry-доставку при временной недоступности webhook.
+
+## Изолированный E2E-профиль
+
+Если стандартные host-порты заняты другим проектом, используйте отдельный compose-проект:
 
 ```bash
 make e2e-up-d
@@ -84,17 +135,71 @@ make e2e-smoke
 make e2e-acceptance-artifact
 ```
 
-The isolated profile exposes the API at `http://localhost:18000` and the UI at `http://localhost:14173`.
+В этом профиле доступны:
 
-Sample acceptance run artifact:
+- UI: `http://localhost:14173`
+- API docs: `http://localhost:18000/docs`
+- RabbitMQ Management: `http://localhost:15673`
+- Prometheus: `http://localhost:19090`
+- Grafana: `http://localhost:13000`
+- Webhook mock: `http://localhost:18090`
 
-- `docs/MasterWork/REPORT/LaTeX/acceptance_results_2026-05-13.json`
+Acceptance-артефакт сохраняется в `docs/MasterWork/REPORT/LaTeX/acceptance_results_2026-05-13.json`.
 
-Useful operations:
+## Полезные команды
 
 ```bash
 make ps
 make logs SERVICES="api integration-worker"
+make logs-api
+make logs-analytics
+make logs-integration
 make migrate-up
 make down
 ```
+
+Полная остановка с удалением volume-данных:
+
+```bash
+make down-v
+```
+
+Сборка PDF-отчета ВКР через dockerized TeX Live:
+
+```bash
+make report-pdf
+make report-check
+```
+
+## Конфигурация
+
+Основные параметры находятся в `.env`, который создается из `.env.example`.
+
+Ключевые значения по умолчанию:
+
+- `UI_API_BASE_URL=http://localhost:8000`
+- `POSTGRES_HOST_PORT=55432`
+- `RABBITMQ_EXCHANGE=events.topic.v1`
+- `WEBHOOK_TARGET_URL=http://webhook-mock:8090/webhook/events`
+- `DETECTOR_MODEL=/app/models/best.pt`
+- `DETECTOR_CLASSES=drone,bird`
+- `USE_MOCK_DETECTOR=false`
+- `DEMO_DRONE_ENABLED=true`
+- `DEMO_DRONE_SOURCE=/app/videos/V_DRONE_009.mp4`
+
+RabbitMQ Management использует значения `RABBITMQ_USER` и `RABBITMQ_PASSWORD` из `.env`. Grafana по умолчанию доступна с `admin` / `admin`.
+
+## Документация и материалы ВКР
+
+- Архитектура: `docs/MasterWork/ARCHITECTURE.md`.
+- Финальный пакет сдачи: `docs/MasterWork/FINAL_DELIVERY`.
+- Основной PDF-отчет: `docs/MasterWork/FINAL_DELIVERY/main.pdf`.
+- Презентация: `docs/MasterWork/FINAL_DELIVERY/PRESENTATION.pptx`.
+- Речь к защите: `docs/MasterWork/FINAL_DELIVERY/SPEECH.md`.
+- Манифест проверок: `docs/MasterWork/FINAL_DELIVERY/MANIFEST.md`.
+
+## Примечания
+
+- Базовая конфигурация CPU-first. Аппаратное ускорение является направлением дальнейшей оптимизации и не требуется для текущего принятого результата.
+- Контракт события версии 1 находится в `contracts/event.schema.v1.json`.
+- Формат routing key: `event.<event_type>.v1`.
